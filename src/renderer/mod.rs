@@ -2,8 +2,11 @@ pub mod mesh;
 pub mod shader;
 
 use glam::{Mat4, Vec3};
-use mesh::{create_ground_plane, create_sphere, Mesh};
+use hecs::World;
+use mesh::Mesh;
 use shader::ShaderProgram;
+
+use crate::components::{Color, MeshHandle, Transform};
 
 const VERT_SRC: &str = include_str!("../../shaders/cel.vert");
 const FRAG_SRC: &str = include_str!("../../shaders/cel.frag");
@@ -11,10 +14,29 @@ const FRAG_SRC: &str = include_str!("../../shaders/cel.frag");
 const FOG_COLOR: Vec3 = Vec3::new(0.1, 0.1, 0.15);
 const LIGHT_DIR: Vec3 = Vec3::new(-0.5, -1.0, -0.3);
 
+/// Holds all loaded meshes. Entities reference meshes by MeshHandle index.
+pub struct MeshStore {
+    meshes: Vec<Mesh>,
+}
+
+impl MeshStore {
+    pub fn new() -> Self {
+        Self { meshes: Vec::new() }
+    }
+
+    pub fn add(&mut self, mesh: Mesh) -> MeshHandle {
+        let handle = MeshHandle(self.meshes.len());
+        self.meshes.push(mesh);
+        handle
+    }
+
+    pub fn get(&self, handle: MeshHandle) -> &Mesh {
+        &self.meshes[handle.0]
+    }
+}
+
 pub struct Renderer {
     shader: ShaderProgram,
-    sphere: Mesh,
-    ground: Mesh,
 }
 
 impl Renderer {
@@ -26,17 +48,18 @@ impl Renderer {
 
         let shader =
             ShaderProgram::from_sources(VERT_SRC, FRAG_SRC).expect("Failed to compile shaders");
-        let sphere = create_sphere(1.0, 16, 32);
-        let ground = create_ground_plane(500.0);
 
-        Self {
-            shader,
-            sphere,
-            ground,
-        }
+        Self { shader }
     }
 
-    pub fn draw_scene(&mut self, view: &Mat4, proj: &Mat4, camera_pos: Vec3) {
+    pub fn draw_scene(
+        &mut self,
+        world: &World,
+        meshes: &MeshStore,
+        view: &Mat4,
+        proj: &Mat4,
+        camera_pos: Vec3,
+    ) {
         unsafe {
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
@@ -51,16 +74,13 @@ impl Renderer {
         self.shader.set_float("u_fog_start", 50.0);
         self.shader.set_float("u_fog_end", 300.0);
 
-        // Ground plane - green
-        let model = Mat4::IDENTITY;
-        self.shader.set_mat4("u_model", &model);
-        self.shader.set_vec3("u_object_color", Vec3::new(0.3, 0.6, 0.2));
-        self.ground.draw();
-
-        // Sphere - red, floating at (0, 2, 0)
-        let model = Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0));
-        self.shader.set_mat4("u_model", &model);
-        self.shader.set_vec3("u_object_color", Vec3::new(0.8, 0.2, 0.15));
-        self.sphere.draw();
+        for (_entity, (transform, mesh_handle, color)) in
+            world.query::<(&Transform, &MeshHandle, &Color)>().iter()
+        {
+            let model = transform.matrix();
+            self.shader.set_mat4("u_model", &model);
+            self.shader.set_vec3("u_object_color", color.0);
+            meshes.get(*mesh_handle).draw();
+        }
     }
 }

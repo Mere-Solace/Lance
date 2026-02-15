@@ -7,3 +7,4 @@ edition = "2021"
 sdl2 = { version = "0.38", features = ["bundled"] }
 gl = "0.6"
 glam = "0.32"
+hecs = "0.10"
