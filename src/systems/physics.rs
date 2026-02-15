@@ -2,6 +2,7 @@ use glam::Vec3;
 use hecs::World;
 
 use crate::components::{Acceleration, GravityAffected, LocalTransform, Velocity};
+use super::collision::collision_system;
 
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 const GRAVITY: Vec3 = Vec3::new(0.0, -9.81, 0.0);
@@ -10,6 +11,7 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) {
     *accumulator += frame_dt;
 
     while *accumulator >= PHYSICS_DT {
+        // 1. Integrate velocity + position
         for (_entity, (local, vel, accel, gravity)) in world
             .query_mut::<(
                 &mut LocalTransform,
@@ -27,6 +29,9 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) {
             // Semi-implicit Euler: update velocity first, then position
             local.position += vel.0 * PHYSICS_DT;
         }
+
+        // 2. Detect & resolve collisions
+        let _events = collision_system(world);
 
         *accumulator -= PHYSICS_DT;
     }
