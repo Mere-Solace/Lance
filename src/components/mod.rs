@@ -69,6 +69,28 @@ pub struct Mass(pub f32);
 /// Marker: entity is affected by gravity.
 pub struct GravityAffected;
 
+/// Collision shape attached to an entity.
+#[allow(dead_code)]
+pub enum Collider {
+    Sphere { radius: f32 },
+    Capsule { radius: f32, height: f32 },
+    Plane { normal: Vec3, offset: f32 },
+}
+
+/// Marker: entity is immovable (infinite mass for collision response).
+pub struct Static;
+
+/// Restitution coefficient (bounciness). 0.0 = no bounce, 1.0 = perfect bounce.
+pub struct Restitution(pub f32);
+
+/// Collision contact produced by the detection phase.
+pub struct CollisionEvent {
+    pub entity_a: Entity,
+    pub entity_b: Entity,
+    pub contact_normal: Vec3,
+    pub penetration_depth: f32,
+}
+
 /// Index into the MeshStore resource.
 #[derive(Clone, Copy)]
 pub struct MeshHandle(pub usize);

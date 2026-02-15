@@ -5,7 +5,10 @@ mod renderer;
 mod systems;
 
 use camera::Camera;
-use components::{add_child, Color, GlobalTransform, GravityAffected, LocalTransform, Mass, Velocity};
+use components::{
+    add_child, Collider, Color, GlobalTransform, GravityAffected, LocalTransform, Mass,
+    Restitution, Static, Velocity,
+};
 use engine::input::InputState;
 use engine::time::FrameTimer;
 use engine::window::GameWindow;
@@ -34,6 +37,11 @@ fn main() {
         GlobalTransform(Mat4::IDENTITY),
         ground_handle,
         Color(Vec3::new(0.3, 0.6, 0.2)),
+        Collider::Plane {
+            normal: Vec3::Y,
+            offset: 0.0,
+        },
+        Static,
     ));
 
     let red_sphere = world.spawn((
@@ -44,6 +52,8 @@ fn main() {
         Velocity(Vec3::new(0.0, 5.0, 0.0)),
         Mass(1.0),
         GravityAffected,
+        Collider::Sphere { radius: 1.0 },
+        Restitution(0.3),
     ));
 
     // Test child: small blue sphere offset to the right of the red sphere
