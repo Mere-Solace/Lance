@@ -5,7 +5,7 @@ mod renderer;
 mod systems;
 
 use camera::Camera;
-use components::{add_child, Color, GlobalTransform, LocalTransform};
+use components::{add_child, Color, GlobalTransform, GravityAffected, LocalTransform, Mass, Velocity};
 use engine::input::InputState;
 use engine::time::FrameTimer;
 use engine::window::GameWindow;
@@ -13,7 +13,7 @@ use glam::{Mat4, Vec3};
 use hecs::World;
 use renderer::mesh::{create_ground_plane, create_sphere};
 use renderer::{MeshStore, Renderer};
-use systems::transform_propagation_system;
+use systems::{physics_system, transform_propagation_system};
 
 fn main() {
     let sdl = sdl2::init().expect("Failed to init SDL2");
@@ -41,6 +41,9 @@ fn main() {
         GlobalTransform(Mat4::IDENTITY),
         sphere_handle,
         Color(Vec3::new(0.8, 0.2, 0.15)),
+        Velocity(Vec3::new(0.0, 5.0, 0.0)),
+        Mass(1.0),
+        GravityAffected,
     ));
 
     // Test child: small blue sphere offset to the right of the red sphere
@@ -61,7 +64,7 @@ fn main() {
     let mut input = InputState::new();
     let mut timer = FrameTimer::new();
     let mut camera = Camera::new();
-    let mut time_accum: f32 = 0.0;
+    let mut physics_accum: f32 = 0.0;
 
     loop {
         timer.tick();
@@ -74,13 +77,7 @@ fn main() {
         camera.look(input.mouse_dx, input.mouse_dy);
         camera.move_wasd(&input, timer.dt);
 
-        // Animate red sphere in a gentle circle for visual testing
-        time_accum += timer.dt;
-        if let Ok(mut local) = world.get::<&mut LocalTransform>(red_sphere) {
-            let t = time_accum * 0.5; // slow rotation
-            local.position.x = 4.0 * t.cos();
-            local.position.z = 4.0 * t.sin();
-        }
+        physics_system(&mut world, &mut physics_accum, timer.dt);
 
         // Propagate transforms before rendering
         transform_propagation_system(&mut world);
