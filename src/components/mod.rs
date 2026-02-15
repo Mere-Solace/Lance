@@ -97,3 +97,9 @@ pub struct MeshHandle(pub usize);
 
 /// RGB color applied to an entity for rendering.
 pub struct Color(pub Vec3);
+
+/// Marker: this entity is the player.
+pub struct Player;
+
+/// Marker: entity is touching the ground (set each physics frame).
+pub struct Grounded;

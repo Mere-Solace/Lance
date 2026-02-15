@@ -3,6 +3,12 @@ use sdl2::keyboard::Scancode;
 
 use crate::engine::input::InputState;
 
+#[derive(PartialEq, Eq)]
+pub enum CameraMode {
+    Player,
+    Fly,
+}
+
 pub struct Camera {
     pub position: Vec3,
     pub yaw: f32,
@@ -10,6 +16,8 @@ pub struct Camera {
     pub speed: f32,
     pub sensitivity: f32,
     pub fov: f32,
+    pub mode: CameraMode,
+    pub third_person: bool,
 }
 
 impl Camera {
@@ -21,6 +29,30 @@ impl Camera {
             speed: 5.0,
             sensitivity: 0.1,
             fov: 45.0,
+            mode: CameraMode::Player,
+            third_person: true,
+        }
+    }
+
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            CameraMode::Player => CameraMode::Fly,
+            CameraMode::Fly => CameraMode::Player,
+        };
+    }
+
+    pub fn toggle_perspective(&mut self) {
+        self.third_person = !self.third_person;
+    }
+
+    pub fn follow_player(&mut self, player_pos: Vec3, eye_height: f32) {
+        let eye_pos = player_pos + Vec3::Y * eye_height;
+        if self.third_person {
+            // Place camera behind and above the player
+            let back = -self.front();
+            self.position = eye_pos + back * 3.0 + Vec3::Y * 0.5;
+        } else {
+            self.position = eye_pos;
         }
     }
 
