@@ -6,7 +6,7 @@ use hecs::World;
 use mesh::Mesh;
 use shader::ShaderProgram;
 
-use crate::components::{Color, MeshHandle, Transform};
+use crate::components::{Color, GlobalTransform, MeshHandle};
 
 const VERT_SRC: &str = include_str!("../../shaders/cel.vert");
 const FRAG_SRC: &str = include_str!("../../shaders/cel.frag");
@@ -74,11 +74,10 @@ impl Renderer {
         self.shader.set_float("u_fog_start", 50.0);
         self.shader.set_float("u_fog_end", 300.0);
 
-        for (_entity, (transform, mesh_handle, color)) in
-            world.query::<(&Transform, &MeshHandle, &Color)>().iter()
+        for (_entity, (global_transform, mesh_handle, color)) in
+            world.query::<(&GlobalTransform, &MeshHandle, &Color)>().iter()
         {
-            let model = transform.matrix();
-            self.shader.set_mat4("u_model", &model);
+            self.shader.set_mat4("u_model", &global_transform.0);
             self.shader.set_vec3("u_object_color", color.0);
             meshes.get(*mesh_handle).draw();
         }

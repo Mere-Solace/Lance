@@ -6,14 +6,14 @@
 |-------|------|--------|-----------|--------|
 | 1 | Core Engine Foundation | Done | — | — |
 | 2 | Core Rendering & Scene | Done | — | — |
-| 3 | Entity & Scene Architecture | Planned | [Phase 3](https://github.com/Mere-Solace/Lance/milestone/1) | #1, #2 |
+| 3 | Entity & Scene Architecture | In Progress | [Phase 3](https://github.com/Mere-Solace/Lance/milestone/1) | #1, #2, #11, #12, #13, #14 |
 | 4 | Physics & Collision | Planned | [Phase 4](https://github.com/Mere-Solace/Lance/milestone/2) | #3, #4, #5 |
 | 5 | Weapons & Effects | Planned | [Phase 5](https://github.com/Mere-Solace/Lance/milestone/3) | #6, #7, #8, #9, #10 |
 
 ## Dependency Graph
 
 ```
-#1 ECS Architecture [P0] ───────┬──────────────────────────────────┐
+#1 ECS Architecture [P0] ✅ ────┬──────────────────────────────────┐
                                 │                                  │
 #2 Transform Hierarchy [P0] <───┤     #3 Physics System [P1] <──── ┤
         │                       │              │                   │
@@ -26,6 +26,13 @@
                                               #9 Bezier [P2] <────────────┘
                                                    │
                                          #10 Swing Effects [P3] <─── #7, #9
+
+#11 Text Rendering [P1] <── #1 ✅
+        │
+        ├── #12 Debug HUD [P2]
+        └── #13 Pause Screen [P2]
+
+#14 Demo Recording [P3] <── #1 ✅
 ```
 
 ## Architecture Principles

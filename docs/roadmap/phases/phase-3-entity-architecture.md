@@ -4,8 +4,12 @@
 Introduce an ECS foundation using `hecs` and implement a transform hierarchy. This phase transitions Lance from direct struct composition to a proper entity-component architecture.
 
 ## Related Issues
-- [#1 ECS Architecture: Decide and Implement](https://github.com/Mere-Solace/Lance/issues/1) — P0, blocks everything
+- [#1 ECS Architecture: Decide and Implement](https://github.com/Mere-Solace/Lance/issues/1) — P0, blocks everything ✅
 - [#2 Transform Hierarchy / Anchor Points](https://github.com/Mere-Solace/Lance/issues/2) — P0, blocked by #1
+- [#11 Bitmap Font Text Rendering System](https://github.com/Mere-Solace/Lance/issues/11) — P1, blocks #12 and #13
+- [#12 Debug HUD: FPS and Camera Coordinates](https://github.com/Mere-Solace/Lance/issues/12) — P2, blocked by #11
+- [#13 Options/Pause Screen with Esc Key](https://github.com/Mere-Solace/Lance/issues/13) — P2, blocked by #11
+- [#14 Demo Recording System](https://github.com/Mere-Solace/Lance/issues/14) — P3, blocked by #1 (complete)
 
 ## Design Decisions
 - [ADR-001: ECS Architecture](../decisions/001-ecs-architecture.md) — hecs
