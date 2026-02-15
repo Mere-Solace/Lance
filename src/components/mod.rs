@@ -56,6 +56,19 @@ pub fn remove_child(world: &mut World, parent: Entity, child: Entity) {
     let _ = world.remove_one::<Parent>(child);
 }
 
+/// Linear velocity in world space.
+pub struct Velocity(pub Vec3);
+
+/// Per-entity acceleration (accumulated forces / mass).
+pub struct Acceleration(pub Vec3);
+
+/// Entity mass in kilograms.
+#[allow(dead_code)]
+pub struct Mass(pub f32);
+
+/// Marker: entity is affected by gravity.
+pub struct GravityAffected;
+
 /// Index into the MeshStore resource.
 #[derive(Clone, Copy)]
 pub struct MeshHandle(pub usize);
