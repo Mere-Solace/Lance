@@ -6,12 +6,13 @@ use camera::Camera;
 use engine::input::InputState;
 use engine::time::FrameTimer;
 use engine::window::GameWindow;
+use renderer::Renderer;
 
 fn main() {
     let sdl = sdl2::init().expect("Failed to init SDL2");
     let window = GameWindow::new(&sdl, "Lance Engine", 1280, 720);
 
-    renderer::init();
+    let mut renderer = Renderer::init();
 
     sdl.mouse().set_relative_mouse_mode(true);
 
@@ -24,17 +25,17 @@ fn main() {
         timer.tick();
         input.update(&mut event_pump);
 
-        if input.quit {
+        if input.should_quit() {
             break;
         }
 
         camera.look(input.mouse_dx, input.mouse_dy);
         camera.move_wasd(&input, timer.dt);
 
-        let _view = camera.view_matrix();
-        let _proj = camera.projection_matrix(window.aspect_ratio());
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(window.aspect_ratio());
 
-        renderer::begin_frame();
+        renderer.draw_scene(&view, &proj, camera.position);
         window.swap();
     }
 }

@@ -66,6 +66,6 @@ impl Camera {
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh_gl(self.fov.to_radians(), aspect, 0.1, 100.0)
+        Mat4::perspective_rh_gl(self.fov.to_radians(), aspect, 0.1, 1000.0)
     }
 }
