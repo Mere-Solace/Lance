@@ -25,9 +25,10 @@ fn closest_point_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
     a + ab * t
 }
 
+/// All returned normals point from entity_a toward entity_b.
 fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
     match (&a.collider_kind, &b.collider_kind) {
-        // Sphere vs Plane
+        // Sphere(A) vs Plane(B): normal points from sphere toward plane = -plane_normal
         (ColliderKind::Sphere { radius }, ColliderKind::Plane { normal, offset }) => {
             let dist = a.position.dot(*normal) - offset;
             let penetration = radius - dist;
@@ -35,13 +36,14 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
                 Some(CollisionEvent {
                     entity_a: a.entity,
                     entity_b: b.entity,
-                    contact_normal: *normal,
+                    contact_normal: -*normal,
                     penetration_depth: penetration,
                 })
             } else {
                 None
             }
         }
+        // Plane(A) vs Sphere(B): canonicalize so sphere=entity_a, plane=entity_b
         (ColliderKind::Plane { normal, offset }, ColliderKind::Sphere { radius }) => {
             let dist = b.position.dot(*normal) - offset;
             let penetration = radius - dist;
@@ -49,7 +51,7 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
                 Some(CollisionEvent {
                     entity_a: b.entity,
                     entity_b: a.entity,
-                    contact_normal: *normal,
+                    contact_normal: -*normal,
                     penetration_depth: penetration,
                 })
             } else {
@@ -57,7 +59,7 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
             }
         }
 
-        // Sphere vs Sphere
+        // Sphere(A) vs Sphere(B): normal = (B - A).normalize()
         (ColliderKind::Sphere { radius: r1 }, ColliderKind::Sphere { radius: r2 }) => {
             let diff = b.position - a.position;
             let dist = diff.length();
@@ -75,7 +77,7 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
             }
         }
 
-        // Capsule vs Plane
+        // Capsule(A) vs Plane(B): normal = -plane_normal (toward plane)
         (ColliderKind::Capsule { radius, half_height }, ColliderKind::Plane { normal, offset }) => {
             let top = a.position + Vec3::Y * *half_height;
             let bottom = a.position - Vec3::Y * *half_height;
@@ -87,13 +89,14 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
                 Some(CollisionEvent {
                     entity_a: a.entity,
                     entity_b: b.entity,
-                    contact_normal: *normal,
+                    contact_normal: -*normal,
                     penetration_depth: penetration,
                 })
             } else {
                 None
             }
         }
+        // Plane(A) vs Capsule(B): canonicalize so capsule=entity_a, plane=entity_b
         (ColliderKind::Plane { normal, offset }, ColliderKind::Capsule { radius, half_height }) => {
             let top = b.position + Vec3::Y * *half_height;
             let bottom = b.position - Vec3::Y * *half_height;
@@ -105,7 +108,7 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
                 Some(CollisionEvent {
                     entity_a: b.entity,
                     entity_b: a.entity,
-                    contact_normal: *normal,
+                    contact_normal: -*normal,
                     penetration_depth: penetration,
                 })
             } else {
@@ -113,7 +116,7 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
             }
         }
 
-        // Capsule vs Sphere
+        // Capsule(A) vs Sphere(B): normal from A's closest point toward B
         (ColliderKind::Capsule { radius: cr, half_height }, ColliderKind::Sphere { radius: sr }) => {
             let top = a.position + Vec3::Y * *half_height;
             let bottom = a.position - Vec3::Y * *half_height;
@@ -133,11 +136,12 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
                 None
             }
         }
+        // Sphere(A) vs Capsule(B): normal from A toward B's closest point
         (ColliderKind::Sphere { radius: sr }, ColliderKind::Capsule { radius: cr, half_height }) => {
             let top = b.position + Vec3::Y * *half_height;
             let bottom = b.position - Vec3::Y * *half_height;
             let closest = closest_point_on_segment(bottom, top, a.position);
-            let diff = a.position - closest;
+            let diff = closest - a.position;
             let dist = diff.length();
             let penetration = (cr + sr) - dist;
             if penetration > 0.0 {
@@ -161,6 +165,10 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
 const REST_VELOCITY_THRESHOLD: f32 = 0.5;
 const DEFAULT_RESTITUTION: f32 = 0.3;
 
+/// Detect collisions and apply impulse-based response.
+/// contact_normal convention: always points from entity_a toward entity_b.
+/// - To push A out of B: move A along -normal
+/// - To push B out of A: move B along +normal
 pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
     // Gather all collider entries
     let entries: Vec<ColliderEntry> = world
@@ -196,7 +204,7 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
         }
     }
 
-    // Response
+    // Response — normal points from A to B in all cases
     for event in &events {
         let a_static = world.get::<&Static>(event.entity_a).is_ok();
         let b_static = world.get::<&Static>(event.entity_b).is_ok();
@@ -219,12 +227,13 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
         let depth = event.penetration_depth;
 
         if a_static {
-            // B is dynamic, A is static — push B out along normal
+            // A is static, B is dynamic — push B away from A (along +normal)
             if let Ok(mut local) = world.get::<&mut LocalTransform>(event.entity_b) {
                 local.position += n * depth;
             }
             if let Ok(mut vel) = world.get::<&mut Velocity>(event.entity_b) {
                 let vel_along_n = vel.0.dot(n);
+                // Negative = B moving toward A (into collision)
                 if vel_along_n < 0.0 {
                     if vel_along_n.abs() < REST_VELOCITY_THRESHOLD {
                         vel.0 -= vel_along_n * n;
@@ -234,17 +243,18 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
                 }
             }
         } else if b_static {
-            // A is dynamic, B is static — push A out opposite to normal
+            // B is static, A is dynamic — push A away from B (along -normal)
             if let Ok(mut local) = world.get::<&mut LocalTransform>(event.entity_a) {
                 local.position -= n * depth;
             }
             if let Ok(mut vel) = world.get::<&mut Velocity>(event.entity_a) {
-                let vel_along_n = vel.0.dot(-n);
-                if vel_along_n < 0.0 {
-                    if vel_along_n.abs() < REST_VELOCITY_THRESHOLD {
-                        vel.0 -= vel_along_n * (-n);
+                let vel_along_n = vel.0.dot(n);
+                // Positive = A moving toward B (into collision)
+                if vel_along_n > 0.0 {
+                    if vel_along_n < REST_VELOCITY_THRESHOLD {
+                        vel.0 -= vel_along_n * n;
                     } else {
-                        vel.0 -= (1.0 + e) * vel_along_n * (-n);
+                        vel.0 -= (1.0 + e) * vel_along_n * n;
                     }
                 }
             }
@@ -262,6 +272,7 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
             let relative_vel = vel_a - vel_b;
             let vel_along_n = relative_vel.dot(n);
 
+            // Positive = A approaching B
             if vel_along_n > 0.0 {
                 let impulse = if vel_along_n < REST_VELOCITY_THRESHOLD {
                     vel_along_n * 0.5

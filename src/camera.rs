@@ -15,7 +15,7 @@ pub struct Camera {
 impl Camera {
     pub fn new() -> Self {
         Self {
-            position: Vec3::new(0.0, 0.0, 3.0),
+            position: Vec3::new(0.0, 1.0, 3.0),
             yaw: -90.0_f32,
             pitch: 0.0,
             speed: 5.0,
