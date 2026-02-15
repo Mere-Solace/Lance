@@ -1,14 +1,15 @@
 use glam::Vec3;
 use hecs::World;
 
-use crate::components::{Acceleration, GravityAffected, LocalTransform, Velocity};
+use crate::components::{Acceleration, CollisionEvent, GravityAffected, LocalTransform, Velocity};
 use super::collision::collision_system;
 
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 const GRAVITY: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 
-pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) {
+pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -> Vec<CollisionEvent> {
     *accumulator += frame_dt;
+    let mut all_events = Vec::new();
 
     while *accumulator >= PHYSICS_DT {
         // 1. Integrate velocity + position
@@ -31,8 +32,11 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) {
         }
 
         // 2. Detect & resolve collisions
-        let _events = collision_system(world);
+        let events = collision_system(world);
+        all_events.extend(events);
 
         *accumulator -= PHYSICS_DT;
     }
+
+    all_events
 }

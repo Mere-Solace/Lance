@@ -133,6 +133,84 @@ pub fn create_sphere(radius: f32, stacks: u32, sectors: u32) -> Mesh {
     upload_mesh(&vertices, &indices)
 }
 
+pub fn create_capsule(radius: f32, height: f32, sectors: u32, stacks: u32) -> Mesh {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let half_height = height * 0.5;
+    let half_stacks = stacks / 2;
+
+    // Top hemisphere (offset up by half_height)
+    for i in 0..=half_stacks {
+        let stack_angle = PI / 2.0 - (i as f32) * (PI / 2.0) / (half_stacks as f32);
+        let xy = radius * stack_angle.cos();
+        let y = radius * stack_angle.sin() + half_height;
+
+        for j in 0..=sectors {
+            let sector_angle = 2.0 * PI * (j as f32) / (sectors as f32);
+            let x = xy * sector_angle.cos();
+            let z = xy * sector_angle.sin();
+
+            vertices.push(x);
+            vertices.push(y);
+            vertices.push(z);
+
+            let nx = stack_angle.cos() * sector_angle.cos();
+            let ny = stack_angle.sin();
+            let nz = stack_angle.cos() * sector_angle.sin();
+            vertices.push(nx);
+            vertices.push(ny);
+            vertices.push(nz);
+        }
+    }
+
+    let top_rows = half_stacks + 1;
+
+    // Bottom hemisphere (offset down by half_height)
+    for i in 0..=half_stacks {
+        let stack_angle = -(i as f32) * (PI / 2.0) / (half_stacks as f32);
+        let xy = radius * stack_angle.cos();
+        let y = radius * stack_angle.sin() - half_height;
+
+        for j in 0..=sectors {
+            let sector_angle = 2.0 * PI * (j as f32) / (sectors as f32);
+            let x = xy * sector_angle.cos();
+            let z = xy * sector_angle.sin();
+
+            vertices.push(x);
+            vertices.push(y);
+            vertices.push(z);
+
+            let nx = stack_angle.cos() * sector_angle.cos();
+            let ny = stack_angle.sin();
+            let nz = stack_angle.cos() * sector_angle.sin();
+            vertices.push(nx);
+            vertices.push(ny);
+            vertices.push(nz);
+        }
+    }
+
+    let total_rows = top_rows + half_stacks + 1;
+
+    // Generate indices for all rows
+    for i in 0..(total_rows - 1) {
+        for j in 0..sectors {
+            let first = i * (sectors + 1) + j;
+            let second = first + sectors + 1;
+
+            indices.push(first);
+            indices.push(second);
+            indices.push(first + 1);
+
+            indices.push(first + 1);
+            indices.push(second);
+            indices.push(second + 1);
+        }
+    }
+
+    upload_mesh(&vertices, &indices)
+}
+
 pub fn create_ground_plane(half_extent: f32) -> Mesh {
     let h = half_extent;
     #[rustfmt::skip]
