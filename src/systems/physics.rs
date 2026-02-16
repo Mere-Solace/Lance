@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hecs::World;
 
-use crate::components::{Acceleration, CollisionEvent, Drag, GravityAffected, LocalTransform, Velocity};
+use crate::components::{Acceleration, CollisionEvent, Drag, GravityAffected, Held, LocalTransform, Velocity};
 use super::collision::collision_system;
 
 const PHYSICS_DT: f32 = 1.0 / 60.0;
@@ -13,15 +13,19 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -
 
     while *accumulator >= PHYSICS_DT {
         // 1. Integrate velocity + position
-        for (_entity, (local, vel, accel, gravity, drag)) in world
+        for (_entity, (local, vel, accel, gravity, drag, held)) in world
             .query_mut::<(
                 &mut LocalTransform,
                 &mut Velocity,
                 Option<&Acceleration>,
                 Option<&GravityAffected>,
                 Option<&Drag>,
+                Option<&Held>,
             )>()
         {
+            if held.is_some() {
+                continue;
+            }
             if gravity.is_some() {
                 vel.0 += GRAVITY * PHYSICS_DT;
             }

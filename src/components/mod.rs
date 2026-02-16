@@ -114,3 +114,32 @@ pub struct Grounded;
 
 /// Checkerboard pattern using primary Color and this secondary color.
 pub struct Checkerboard(pub Vec3);
+
+/// Marker: entity is hidden from rendering but still participates in physics/collision.
+pub struct Hidden;
+
+/// Marker: entity can be grabbed by the player.
+pub struct Grabbable;
+
+/// Marker: entity is currently held (skip physics/collision).
+pub struct Held;
+
+/// State for the grab/throw system, attached to the player entity.
+pub struct GrabState {
+    pub held_entity: Option<Entity>,
+    pub wind_up_time: f32,
+    pub is_winding: bool,
+    /// World-space rotation of the held entity at grab time (preserved while held).
+    pub held_rotation: Quat,
+}
+
+impl GrabState {
+    pub fn new() -> Self {
+        Self {
+            held_entity: None,
+            wind_up_time: 0.0,
+            is_winding: false,
+            held_rotation: Quat::IDENTITY,
+        }
+    }
+}
