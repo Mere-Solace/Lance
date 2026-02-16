@@ -1,10 +1,12 @@
 mod camera;
 mod components;
 mod engine;
+mod recording;
 mod renderer;
 mod systems;
 
 use camera::{Camera, CameraMode};
+use clap::Parser;
 use components::{
     add_child, Checkerboard, Children, Collider, Color, Drag, Friction, GlobalTransform, GrabState,
     Grabbable, GravityAffected, Grounded, Held, Hidden, LocalTransform, Mass, Player, Restitution,
@@ -20,7 +22,16 @@ use renderer::{MeshStore, Renderer};
 use sdl2::keyboard::Scancode;
 use systems::{grab_throw_system, grounded_system, physics_system, player_movement_system, transform_propagation_system};
 
+#[derive(Parser)]
+#[command(name = "lance", about = "Lance Engine")]
+struct Args {
+    /// Record 5 seconds of video to demos/demo.mp4
+    #[arg(long)]
+    record: bool,
+}
+
 fn main() {
+    let args = Args::parse();
     let sdl = sdl2::init().expect("Failed to init SDL2");
     let window = GameWindow::new(&sdl, "Lance Engine", 1280, 720);
 
@@ -158,6 +169,17 @@ fn main() {
         add_child(&mut world, player_entity, sword_entity);
     }
 
+    let mut recorder = if args.record {
+        let (w, h) = window.size();
+        Some(recording::Recorder::new(w, h, "demos/demo.mp4"))
+    } else {
+        None
+    };
+    let mut record_elapsed: f32 = 0.0;
+    let mut record_frame_debt: f32 = 0.0;
+    const RECORD_DURATION: f32 = 5.0;
+    const RECORD_FRAME_INTERVAL: f32 = 1.0 / 60.0;
+
     sdl.mouse().set_relative_mouse_mode(true);
 
     let mut event_pump = sdl.event_pump().expect("Failed to get event pump");
@@ -258,6 +280,20 @@ fn main() {
         let proj = camera.projection_matrix(window.aspect_ratio());
 
         renderer.draw_scene(&world, &meshes, &view, &proj, camera.position);
+
+        if let Some(ref mut rec) = recorder {
+            record_elapsed += timer.dt;
+            record_frame_debt += timer.dt;
+            while record_frame_debt >= RECORD_FRAME_INTERVAL {
+                rec.capture_frame();
+                record_frame_debt -= RECORD_FRAME_INTERVAL;
+            }
+            if record_elapsed >= RECORD_DURATION {
+                recorder.take().unwrap().finish();
+                break;
+            }
+        }
+
         window.swap();
     }
 }
