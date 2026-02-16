@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hecs::{Entity, World};
 
-use crate::components::{Collider, CollisionEvent, LocalTransform, Restitution, Static, Velocity};
+use crate::components::{Collider, CollisionEvent, Friction, LocalTransform, Restitution, Static, Velocity};
 
 struct ColliderEntry {
     entity: Entity,
@@ -164,6 +164,22 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
 
 const REST_VELOCITY_THRESHOLD: f32 = 0.5;
 const DEFAULT_RESTITUTION: f32 = 0.3;
+const DEFAULT_FRICTION: f32 = 0.5;
+const PHYSICS_DT: f32 = 1.0 / 60.0;
+
+/// Apply Coulomb friction: reduce tangential velocity proportional to normal impulse.
+/// Clamps so friction never reverses the sliding direction.
+fn apply_friction(vel: &mut Vec3, normal: Vec3, mu: f32, normal_impulse: f32) {
+    let tangent_vel = *vel - vel.dot(normal) * normal;
+    let tangent_speed = tangent_vel.length();
+    if tangent_speed < 1e-6 {
+        return;
+    }
+    let tangent_dir = tangent_vel / tangent_speed;
+    // Friction impulse magnitude, clamped to not exceed tangential speed
+    let friction_impulse = (mu * normal_impulse * PHYSICS_DT).min(tangent_speed);
+    *vel -= tangent_dir * friction_impulse;
+}
 
 /// Detect collisions and apply impulse-based response.
 /// contact_normal convention: always points from entity_a toward entity_b.
@@ -223,6 +239,16 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
             .unwrap_or(DEFAULT_RESTITUTION);
         let e = (restitution_a + restitution_b) * 0.5;
 
+        let friction_a = world
+            .get::<&Friction>(event.entity_a)
+            .map(|f| f.0)
+            .unwrap_or(DEFAULT_FRICTION);
+        let friction_b = world
+            .get::<&Friction>(event.entity_b)
+            .map(|f| f.0)
+            .unwrap_or(DEFAULT_FRICTION);
+        let mu = (friction_a + friction_b) * 0.5;
+
         let n = event.contact_normal;
         let depth = event.penetration_depth;
 
@@ -235,11 +261,16 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
                 let vel_along_n = vel.0.dot(n);
                 // Negative = B moving toward A (into collision)
                 if vel_along_n < 0.0 {
-                    if vel_along_n.abs() < REST_VELOCITY_THRESHOLD {
+                    let normal_impulse = if vel_along_n.abs() < REST_VELOCITY_THRESHOLD {
                         vel.0 -= vel_along_n * n;
+                        vel_along_n.abs()
                     } else {
                         vel.0 -= (1.0 + e) * vel_along_n * n;
-                    }
+                        (1.0 + e) * vel_along_n.abs()
+                    };
+
+                    // Coulomb friction: reduce tangential velocity
+                    apply_friction(&mut vel.0, n, mu, normal_impulse);
                 }
             }
         } else if b_static {
@@ -251,11 +282,16 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
                 let vel_along_n = vel.0.dot(n);
                 // Positive = A moving toward B (into collision)
                 if vel_along_n > 0.0 {
-                    if vel_along_n < REST_VELOCITY_THRESHOLD {
+                    let normal_impulse = if vel_along_n < REST_VELOCITY_THRESHOLD {
                         vel.0 -= vel_along_n * n;
+                        vel_along_n
                     } else {
                         vel.0 -= (1.0 + e) * vel_along_n * n;
-                    }
+                        (1.0 + e) * vel_along_n
+                    };
+
+                    // Coulomb friction: reduce tangential velocity
+                    apply_friction(&mut vel.0, n, mu, normal_impulse);
                 }
             }
         } else {
@@ -281,9 +317,11 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
                 };
                 if let Ok(mut vel) = world.get::<&mut Velocity>(event.entity_a) {
                     vel.0 -= impulse * n;
+                    apply_friction(&mut vel.0, n, mu, impulse);
                 }
                 if let Ok(mut vel) = world.get::<&mut Velocity>(event.entity_b) {
                     vel.0 += impulse * n;
+                    apply_friction(&mut vel.0, n, mu, impulse);
                 }
             }
         }

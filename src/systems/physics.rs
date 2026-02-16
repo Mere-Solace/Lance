@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hecs::World;
 
-use crate::components::{Acceleration, CollisionEvent, GravityAffected, LocalTransform, Velocity};
+use crate::components::{Acceleration, CollisionEvent, Drag, GravityAffected, LocalTransform, Velocity};
 use super::collision::collision_system;
 
 const PHYSICS_DT: f32 = 1.0 / 60.0;
@@ -13,12 +13,13 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -
 
     while *accumulator >= PHYSICS_DT {
         // 1. Integrate velocity + position
-        for (_entity, (local, vel, accel, gravity)) in world
+        for (_entity, (local, vel, accel, gravity, drag)) in world
             .query_mut::<(
                 &mut LocalTransform,
                 &mut Velocity,
                 Option<&Acceleration>,
                 Option<&GravityAffected>,
+                Option<&Drag>,
             )>()
         {
             if gravity.is_some() {
@@ -26,6 +27,11 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -
             }
             if let Some(accel) = accel {
                 vel.0 += accel.0 * PHYSICS_DT;
+            }
+            // Apply drag: vel *= (1 - drag * dt)
+            if let Some(drag) = drag {
+                let damping = (1.0 - drag.0 * PHYSICS_DT).max(0.0);
+                vel.0 *= damping;
             }
             // Semi-implicit Euler: update velocity first, then position
             local.position += vel.0 * PHYSICS_DT;

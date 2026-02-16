@@ -6,8 +6,8 @@ mod systems;
 
 use camera::{Camera, CameraMode};
 use components::{
-    add_child, Collider, Color, GlobalTransform, GravityAffected, Grounded, LocalTransform, Mass,
-    Player, Restitution, Static, Velocity,
+    add_child, Collider, Color, Drag, Friction, GlobalTransform, GravityAffected, Grounded,
+    LocalTransform, Mass, Player, Restitution, Static, Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
@@ -56,6 +56,8 @@ fn main() {
         GravityAffected,
         Collider::Sphere { radius: 1.0 },
         Restitution(0.3),
+        Friction(0.5),
+        Drag(0.5),
     ));
 
     // Test child: small blue sphere offset to the right of the red sphere
@@ -84,6 +86,7 @@ fn main() {
             height: 1.0,
         },
         Restitution(0.0),
+        Friction(0.8),
         Player,
         Grounded,
     ));

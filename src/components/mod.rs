@@ -83,6 +83,14 @@ pub struct Static;
 /// Restitution coefficient (bounciness). 0.0 = no bounce, 1.0 = perfect bounce.
 pub struct Restitution(pub f32);
 
+/// Surface friction coefficient. Higher values = more friction. 0.0 = ice, 1.0 = rubber.
+/// Combined between contact pairs by averaging.
+pub struct Friction(pub f32);
+
+/// Velocity damping factor (air resistance / drag). Applied as vel *= (1 - drag * dt) each step.
+/// 0.0 = no drag, higher values = faster deceleration.
+pub struct Drag(pub f32);
+
 /// Collision contact produced by the detection phase.
 pub struct CollisionEvent {
     pub entity_a: Entity,
