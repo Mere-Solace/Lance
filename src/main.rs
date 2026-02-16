@@ -8,9 +8,10 @@ mod systems;
 use camera::{Camera, CameraMode};
 use clap::Parser;
 use components::{
-    add_child, Checkerboard, Children, Collider, Color, Drag, Friction, GlobalTransform, GrabState,
-    Grabbable, GravityAffected, Grounded, Held, Hidden, LocalTransform, Mass, Player, Restitution,
-    Static, SwordPosition, SwordState, Velocity,
+    add_child, Checkerboard, Children, Collider, Color, DirectionalLight, Drag, Friction,
+    GlobalTransform, GrabState, Grabbable, GravityAffected, Grounded, Held, Hidden,
+    LocalTransform, Mass, Player, PointLight, Restitution, SpotLight, Static, SwordPosition,
+    SwordState, Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
@@ -168,6 +169,48 @@ fn main() {
         ));
         add_child(&mut world, player_entity, sword_entity);
     }
+
+    // --- Light entities ---
+
+    // Directional light (sun) with shadow mapping
+    world.spawn((DirectionalLight {
+        direction: Vec3::new(-0.5, -1.0, -0.3),
+        color: Vec3::new(1.0, 0.95, 0.85),
+        intensity: 1.0,
+        shadow_resolution: 2048,
+        shadow_extent: 40.0,
+    },));
+
+    // Warm point light near the red sphere
+    world.spawn((
+        LocalTransform::new(Vec3::new(3.0, 3.0, 0.0)),
+        PointLight::new(Vec3::new(1.0, 0.6, 0.2), 2.0, 15.0),
+    ));
+
+    // Cool blue point light on the other side
+    world.spawn((
+        LocalTransform::new(Vec3::new(-4.0, 2.0, -3.0)),
+        PointLight::new(Vec3::new(0.2, 0.4, 1.0), 1.5, 12.0),
+    ));
+
+    // Green point light farther out
+    world.spawn((
+        LocalTransform::new(Vec3::new(0.0, 4.0, -8.0)),
+        PointLight::new(Vec3::new(0.1, 0.9, 0.3), 1.8, 18.0),
+    ));
+
+    // Spot light shining down like a street lamp
+    world.spawn((
+        LocalTransform::new(Vec3::new(5.0, 6.0, 5.0)),
+        SpotLight::new(
+            Vec3::new(0.0, -1.0, 0.0),    // pointing down
+            Vec3::new(1.0, 0.9, 0.7),     // warm white
+            3.0,                            // intensity
+            15.0,                           // inner cone degrees
+            30.0,                           // outer cone degrees
+            20.0,                           // radius
+        ),
+    ));
 
     let mut recorder = if args.record {
         let (w, h) = window.size();
