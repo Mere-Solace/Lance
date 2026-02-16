@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hecs::{Entity, World};
 
-use crate::components::{Collider, CollisionEvent, Friction, LocalTransform, Restitution, Static, Velocity};
+use crate::components::{Collider, CollisionEvent, Friction, Held, LocalTransform, Restitution, Static, Velocity};
 
 struct ColliderEntry {
     entity: Entity,
@@ -188,9 +188,10 @@ fn apply_friction(vel: &mut Vec3, normal: Vec3, mu: f32, normal_impulse: f32) {
 pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
     // Gather all collider entries
     let entries: Vec<ColliderEntry> = world
-        .query_mut::<(&LocalTransform, &Collider)>()
+        .query_mut::<(&LocalTransform, &Collider, Option<&Held>)>()
         .into_iter()
-        .map(|(entity, (local, collider))| {
+        .filter(|(_entity, (_local, _collider, held))| held.is_none())
+        .map(|(entity, (local, collider, _held))| {
             let kind = match collider {
                 Collider::Sphere { radius } => ColliderKind::Sphere { radius: *radius },
                 Collider::Capsule { radius, height } => ColliderKind::Capsule {

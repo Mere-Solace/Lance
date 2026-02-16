@@ -1,15 +1,15 @@
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use hecs::World;
 use sdl2::keyboard::Scancode;
 
 use crate::camera::Camera;
-use crate::components::{CollisionEvent, Grounded, Player, Velocity};
+use crate::components::{CollisionEvent, Grounded, LocalTransform, Player, Velocity};
 use crate::engine::input::InputState;
 
 const PLAYER_MOVE_SPEED: f32 = 6.0;
 const JUMP_IMPULSE: f32 = 7.0;
 
-pub fn player_movement_system(world: &mut World, input: &InputState, camera: &Camera) {
+pub fn player_movement_system(world: &mut World, input: &InputState, camera: &Camera, speed_multiplier: f32) {
     let yaw_rad = camera.yaw.to_radians();
     let forward = Vec3::new(yaw_rad.cos(), 0.0, yaw_rad.sin()).normalize();
     let right = forward.cross(Vec3::Y).normalize();
@@ -29,14 +29,18 @@ pub fn player_movement_system(world: &mut World, input: &InputState, camera: &Ca
     }
 
     let horizontal = if move_dir.length_squared() > 0.0 {
-        move_dir.normalize() * PLAYER_MOVE_SPEED
+        move_dir.normalize() * PLAYER_MOVE_SPEED * speed_multiplier
     } else {
         Vec3::ZERO
     };
 
-    for (_entity, (vel, _player, grounded)) in
-        world.query_mut::<(&mut Velocity, &Player, Option<&Grounded>)>()
+    for (_entity, (local, vel, _player, grounded)) in
+        world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, Option<&Grounded>)>()
     {
+        // Rotate player entity to face camera direction
+        // Offset by +π/2 so local +Z aligns with camera front in XZ
+        local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
+
         vel.0.x = horizontal.x;
         vel.0.z = horizontal.z;
 

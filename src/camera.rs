@@ -45,14 +45,15 @@ impl Camera {
         self.third_person = !self.third_person;
     }
 
-    pub fn follow_player(&mut self, player_pos: Vec3, eye_height: f32) {
+    pub fn follow_player(&mut self, player_pos: Vec3, eye_height: f32, capsule_radius: f32) {
         let eye_pos = player_pos + Vec3::Y * eye_height;
         if self.third_person {
             // Place camera behind and above the player
             let back = -self.front();
             self.position = eye_pos + back * 3.0 + Vec3::Y * 0.5;
         } else {
-            self.position = eye_pos;
+            // Place camera just in front of capsule face to avoid clipping
+            self.position = eye_pos + self.front() * capsule_radius;
         }
     }
 

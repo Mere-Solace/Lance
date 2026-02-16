@@ -6,8 +6,9 @@ mod systems;
 
 use camera::{Camera, CameraMode};
 use components::{
-    add_child, Checkerboard, Collider, Color, Drag, Friction, GlobalTransform, GravityAffected,
-    Grounded, LocalTransform, Mass, Player, Restitution, Static, Velocity,
+    add_child, Checkerboard, Children, Collider, Color, Drag, Friction, GlobalTransform, GrabState,
+    Grabbable, GravityAffected, Grounded, Hidden, LocalTransform, Mass, Player, Restitution, Static,
+    Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
@@ -17,7 +18,7 @@ use hecs::World;
 use renderer::mesh::{create_capsule, create_ground_plane, create_sphere};
 use renderer::{MeshStore, Renderer};
 use sdl2::keyboard::Scancode;
-use systems::{grounded_system, physics_system, player_movement_system, transform_propagation_system};
+use systems::{grab_throw_system, grounded_system, physics_system, player_movement_system, transform_propagation_system};
 
 fn main() {
     let sdl = sdl2::init().expect("Failed to init SDL2");
@@ -30,6 +31,7 @@ fn main() {
     let sphere_handle = meshes.add(create_sphere(1.0, 16, 32));
     let ground_handle = meshes.add(create_ground_plane(500.0));
     let capsule_handle = meshes.add(create_capsule(0.3, 1.0, 16, 16));
+    let arm_handle = meshes.add(create_capsule(0.08, 0.5, 8, 8));
 
     // ECS world — scene objects are entities with LocalTransform, GlobalTransform, MeshHandle, Color
     let mut world = World::new();
@@ -59,6 +61,7 @@ fn main() {
         Restitution(0.3),
         Friction(0.5),
         Drag(0.5),
+        Grabbable,
     ));
 
     // Test child: small blue sphere offset to the right of the red sphere
@@ -90,7 +93,32 @@ fn main() {
         Friction(0.8),
         Player,
         Grounded,
+        GrabState::new(),
     ));
+
+    // Arm capsules — children of the player, positioned at shoulders
+    {
+        use glam::Quat;
+        let mut left_arm_t = LocalTransform::new(Vec3::new(-0.25, 0.2, 0.4));
+        left_arm_t.rotation = Quat::from_rotation_z(0.15);
+        let left_arm = world.spawn((
+            left_arm_t,
+            GlobalTransform(Mat4::IDENTITY),
+            arm_handle,
+            Color(Vec3::new(0.6, 0.6, 0.7)),
+        ));
+        add_child(&mut world, player_entity, left_arm);
+
+        let mut right_arm_t = LocalTransform::new(Vec3::new(0.25, 0.2, 0.4));
+        right_arm_t.rotation = Quat::from_rotation_z(-0.15);
+        let right_arm = world.spawn((
+            right_arm_t,
+            GlobalTransform(Mat4::IDENTITY),
+            arm_handle,
+            Color(Vec3::new(0.6, 0.6, 0.7)),
+        ));
+        add_child(&mut world, player_entity, right_arm);
+    }
 
     sdl.mouse().set_relative_mouse_mode(true);
 
@@ -112,16 +140,38 @@ fn main() {
         for event in &input.events {
             match event {
                 InputEvent::KeyPressed(Scancode::F1) => camera.toggle_mode(),
-                InputEvent::KeyPressed(Scancode::Z) => camera.toggle_perspective(),
+                InputEvent::KeyPressed(Scancode::Z) => {
+                    camera.toggle_perspective();
+                    // Collect player + children entity IDs
+                    let mut to_toggle = vec![player_entity];
+                    if let Ok(children) = world.get::<&Children>(player_entity) {
+                        to_toggle.extend(children.0.iter().copied());
+                    }
+                    // Hide/show player body in first/third person
+                    for entity in to_toggle {
+                        if camera.third_person {
+                            let _ = world.remove_one::<Hidden>(entity);
+                        } else {
+                            let _ = world.insert_one(entity, Hidden);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         camera.look(input.mouse_dx, input.mouse_dy);
 
+        // Grab/throw must run before player movement to produce speed multiplier
+        let speed_mult = if camera.mode == CameraMode::Player {
+            grab_throw_system(&mut world, &input, &camera, timer.dt)
+        } else {
+            1.0
+        };
+
         match camera.mode {
             CameraMode::Player => {
-                player_movement_system(&mut world, &input, &camera);
+                player_movement_system(&mut world, &input, &camera, speed_mult);
             }
             CameraMode::Fly => {
                 camera.move_wasd(&input, timer.dt);
@@ -133,7 +183,7 @@ fn main() {
 
         if camera.mode == CameraMode::Player {
             if let Ok(local) = world.get::<&LocalTransform>(player_entity) {
-                camera.follow_player(local.position, 0.7);
+                camera.follow_player(local.position, 0.7, 0.3);
             }
         }
 
