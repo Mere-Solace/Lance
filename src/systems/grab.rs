@@ -21,6 +21,8 @@ const MAX_WIND_UP_TIME: f32 = 0.75;
 const WIND_UP_MOVE_SLOWDOWN: f32 = 0.3;
 const VELOCITY_SMOOTHING: f32 = 15.0;
 const HELD_VELOCITY_DAMPER: f32 = 0.25;
+const DROP_VELOCITY_DAMPER: f32 = 0.05;
+const CHEST_HEIGHT: f32 = 0.5;
 const PITCH_ROTATION_LERP_SPEED: f32 = 12.0;
 
 /// Grab/throw system. Returns movement speed multiplier (1.0 normal, 0.3 during wind-up).
@@ -64,7 +66,12 @@ pub fn grab_throw_system(
         None => {
             // Not holding — check for grab attempt
             if right_click_pressed && alt_held {
-                if let Some(hit) = raycast_grabbable(world, camera.position, camera.front(), GRAB_DISTANCE) {
+                // Raycast from player's chest, not the camera
+                let chest_pos = {
+                    let lt = world.get::<&LocalTransform>(player_entity).unwrap();
+                    lt.position + Vec3::Y * CHEST_HEIGHT
+                };
+                if let Some(hit) = raycast_grabbable(world, chest_pos, camera.front(), GRAB_DISTANCE) {
                     // Don't grab static entities
                     if world.get::<&Static>(hit.entity).is_ok() {
                         return 1.0;
@@ -141,7 +148,7 @@ pub fn grab_throw_system(
                 }
                 let _ = world.remove_one::<Held>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
-                    vel.0 = held_velocity;
+                    vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
                 }
                 let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                 grab.held_entity = None;
