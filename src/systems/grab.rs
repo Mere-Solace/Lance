@@ -91,17 +91,18 @@ pub fn grab_throw_system(
                     // Re-parent held entity under player
                     add_child(world, player_entity, hit.entity);
 
-                    // Set local transform: counter-rotate to preserve world orientation
+                    // Set local transform relative to player
+                    let local_rot = inv_yaw * held_world_rot;
                     if let Ok(mut lt) = world.get::<&mut LocalTransform>(hit.entity) {
                         lt.position = local_offset;
-                        lt.rotation = inv_yaw * held_world_rot;
+                        lt.rotation = local_rot;
                     }
 
-                    // Mark as held, store the world rotation to preserve it
+                    // Mark as held, store the local rotation to keep it stable
                     let _ = world.insert_one(hit.entity, Held);
                     let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                     grab.held_entity = Some(hit.entity);
-                    grab.held_rotation = held_world_rot;
+                    grab.held_rotation = local_rot;
                     grab.wind_up_time = 0.0;
                     grab.is_winding = false;
                 }
@@ -122,24 +123,16 @@ pub fn grab_throw_system(
             let should_drop = (!alt_held || !right_held) && !is_winding;
 
             if should_drop {
-                // Read world position from GlobalTransform before un-parenting
-                let world_pos = world
-                    .get::<&GlobalTransform>(held)
-                    .map(|gt| {
-                        let cols = gt.0.to_cols_array_2d();
-                        Vec3::new(cols[3][0], cols[3][1], cols[3][2])
-                    })
-                    .unwrap_or_else(|_| {
-                        world.get::<&LocalTransform>(held).map(|lt| lt.position).unwrap_or(Vec3::ZERO)
-                    });
+                // Read world transform from GlobalTransform before un-parenting
+                let (world_pos, world_rot) = extract_world_transform(world, held);
 
                 // Un-parent from player
                 remove_child(world, player_entity, held);
 
-                // Set world position and zero velocity
+                // Restore world-space position and rotation
                 if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                     lt.position = world_pos;
-                    lt.rotation = Quat::IDENTITY;
+                    lt.rotation = world_rot;
                 }
                 let _ = world.remove_one::<Held>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
@@ -153,15 +146,11 @@ pub fn grab_throw_system(
             }
 
             // Lerp local position toward hold offset (player-relative)
-            // Counter-rotate to preserve the object's world orientation from grab time
-            let player_rot = world
-                .get::<&LocalTransform>(player_entity)
-                .map(|lt| lt.rotation)
-                .unwrap_or(Quat::IDENTITY);
+            // Keep the stored local rotation — object rotates with player via parenting
             if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                 let diff = HOLD_OFFSET - lt.position;
                 lt.position += diff * (HOLD_LERP_SPEED * dt).min(1.0);
-                lt.rotation = player_rot.inverse() * held_rotation;
+                lt.rotation = held_rotation;
             }
             // Zero velocity while held
             if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
@@ -182,24 +171,16 @@ pub fn grab_throw_system(
                 let force = MIN_THROW_FORCE + (MAX_THROW_FORCE - MIN_THROW_FORCE) * throw_t;
                 let throw_vel = camera.front() * force;
 
-                // Read world position from GlobalTransform before un-parenting
-                let world_pos = world
-                    .get::<&GlobalTransform>(held)
-                    .map(|gt| {
-                        let cols = gt.0.to_cols_array_2d();
-                        Vec3::new(cols[3][0], cols[3][1], cols[3][2])
-                    })
-                    .unwrap_or_else(|_| {
-                        world.get::<&LocalTransform>(held).map(|lt| lt.position).unwrap_or(Vec3::ZERO)
-                    });
+                // Read world transform from GlobalTransform before un-parenting
+                let (world_pos, world_rot) = extract_world_transform(world, held);
 
                 // Un-parent from player
                 remove_child(world, player_entity, held);
 
-                // Set world position and throw velocity
+                // Restore world-space position and rotation, apply throw velocity
                 if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                     lt.position = world_pos;
-                    lt.rotation = Quat::IDENTITY;
+                    lt.rotation = world_rot;
                 }
                 let _ = world.remove_one::<Held>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
@@ -216,4 +197,20 @@ pub fn grab_throw_system(
             1.0
         }
     }
+}
+
+/// Extract world-space position and rotation from an entity's GlobalTransform.
+fn extract_world_transform(world: &World, entity: hecs::Entity) -> (Vec3, Quat) {
+    world
+        .get::<&GlobalTransform>(entity)
+        .map(|gt| {
+            let (_scale, rot, pos) = gt.0.to_scale_rotation_translation();
+            (pos, rot)
+        })
+        .unwrap_or_else(|_| {
+            world
+                .get::<&LocalTransform>(entity)
+                .map(|lt| (lt.position, lt.rotation))
+                .unwrap_or((Vec3::ZERO, Quat::IDENTITY))
+        })
 }
