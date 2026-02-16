@@ -6,8 +6,8 @@ mod systems;
 
 use camera::{Camera, CameraMode};
 use components::{
-    add_child, Collider, Color, Drag, Friction, GlobalTransform, GravityAffected, Grounded,
-    LocalTransform, Mass, Player, Restitution, Static, Velocity,
+    add_child, Checkerboard, Collider, Color, Drag, Friction, GlobalTransform, GravityAffected,
+    Grounded, LocalTransform, Mass, Player, Restitution, Static, Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
@@ -39,6 +39,7 @@ fn main() {
         GlobalTransform(Mat4::IDENTITY),
         ground_handle,
         Color(Vec3::new(0.3, 0.6, 0.2)),
+        Checkerboard(Vec3::new(0.22, 0.48, 0.15)),
         Collider::Plane {
             normal: Vec3::Y,
             offset: 0.0,

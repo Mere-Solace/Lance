@@ -5,11 +5,13 @@ in vec3 v_normal;
 
 uniform vec3 u_light_dir;
 uniform vec3 u_object_color;
+uniform vec3 u_object_color_2;
 uniform vec3 u_ambient_color;
 uniform vec3 u_camera_pos;
 uniform vec3 u_fog_color;
 uniform float u_fog_start;
 uniform float u_fog_end;
+uniform int u_checkerboard;
 
 out vec4 frag_color;
 
@@ -30,7 +32,14 @@ void main() {
         intensity = 0.2;
     }
 
-    vec3 lit_color = u_object_color * (u_ambient_color + vec3(intensity));
+    // Checkerboard pattern using world XZ coordinates
+    vec3 base_color = u_object_color;
+    if (u_checkerboard != 0) {
+        float checker = mod(floor(v_world_pos.x) + floor(v_world_pos.z), 2.0);
+        base_color = mix(u_object_color, u_object_color_2, checker);
+    }
+
+    vec3 lit_color = base_color * (u_ambient_color + vec3(intensity));
 
     // Linear depth fog
     float dist = length(v_world_pos - u_camera_pos);

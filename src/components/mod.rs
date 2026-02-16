@@ -111,3 +111,6 @@ pub struct Player;
 
 /// Marker: entity is touching the ground (set each physics frame).
 pub struct Grounded;
+
+/// Checkerboard pattern using primary Color and this secondary color.
+pub struct Checkerboard(pub Vec3);
