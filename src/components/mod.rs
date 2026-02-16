@@ -131,6 +131,10 @@ pub struct GrabState {
     pub is_winding: bool,
     /// Player-local rotation of the held entity (rotates with player via parenting).
     pub held_rotation: Quat,
+    /// Previous frame's world position of the held entity (for velocity tracking).
+    pub prev_world_pos: Vec3,
+    /// Smoothed world-space velocity of the held entity.
+    pub held_velocity: Vec3,
 }
 
 impl GrabState {
@@ -140,6 +144,8 @@ impl GrabState {
             wind_up_time: 0.0,
             is_winding: false,
             held_rotation: Quat::IDENTITY,
+            prev_world_pos: Vec3::ZERO,
+            held_velocity: Vec3::ZERO,
         }
     }
 }

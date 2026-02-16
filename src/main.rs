@@ -7,8 +7,8 @@ mod systems;
 use camera::{Camera, CameraMode};
 use components::{
     add_child, Checkerboard, Children, Collider, Color, Drag, Friction, GlobalTransform, GrabState,
-    Grabbable, GravityAffected, Grounded, Hidden, LocalTransform, Mass, Player, Restitution, Static,
-    Velocity,
+    Grabbable, GravityAffected, Grounded, Held, Hidden, LocalTransform, Mass, Player, Restitution,
+    Static, Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
@@ -49,23 +49,26 @@ fn main() {
         Static,
     ));
 
+    let mut sphere_transform = LocalTransform::new(Vec3::new(0.0, 2.0, 0.0));
+    sphere_transform.scale = Vec3::splat(0.5);
+
     let red_sphere = world.spawn((
-        LocalTransform::new(Vec3::new(0.0, 2.0, 0.0)),
+        sphere_transform,
         GlobalTransform(Mat4::IDENTITY),
         sphere_handle,
         Color(Vec3::new(0.8, 0.2, 0.15)),
         Velocity(Vec3::new(0.0, 5.0, 0.0)),
         Mass(1.0),
         GravityAffected,
-        Collider::Sphere { radius: 1.0 },
+        Collider::Sphere { radius: 0.5 },
         Restitution(0.3),
-        Friction(0.5),
+        Friction(0.7),
         Drag(0.5),
         Grabbable,
     ));
 
     // Test child: small blue sphere offset to the right of the red sphere
-    let mut child_transform = LocalTransform::new(Vec3::new(2.5, 0.0, 0.0));
+    let mut child_transform = LocalTransform::new(Vec3::new(0.75, 0.0, 0.0));
     child_transform.scale = Vec3::splat(0.4);
     let child_sphere = world.spawn((
         child_transform,
@@ -78,7 +81,7 @@ fn main() {
 
     // Player entity — capsule body with physics
     let player_entity = world.spawn((
-        LocalTransform::new(Vec3::new(0.0, 2.0, -5.0)),
+        LocalTransform::new(Vec3::new(0.0, 2.0, 5.0)),
         GlobalTransform(Mat4::IDENTITY),
         capsule_handle,
         Color(Vec3::new(0.6, 0.6, 0.7)),
@@ -147,8 +150,11 @@ fn main() {
                     if let Ok(children) = world.get::<&Children>(player_entity) {
                         to_toggle.extend(children.0.iter().copied());
                     }
-                    // Hide/show player body in first/third person
+                    // Hide/show player body in first/third person (skip held objects)
                     for entity in to_toggle {
+                        if world.get::<&Held>(entity).is_ok() {
+                            continue;
+                        }
                         if camera.third_person {
                             let _ = world.remove_one::<Hidden>(entity);
                         } else {
