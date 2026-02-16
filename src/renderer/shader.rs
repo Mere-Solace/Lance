@@ -82,6 +82,13 @@ impl ShaderProgram {
         }
     }
 
+    pub fn set_vec4(&mut self, name: &str, v: [f32; 4]) {
+        let loc = self.get_uniform_location(name);
+        unsafe {
+            gl::Uniform4f(loc, v[0], v[1], v[2], v[3]);
+        }
+    }
+
     pub fn set_int(&mut self, name: &str, val: i32) {
         let loc = self.get_uniform_location(name);
         unsafe {
