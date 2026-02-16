@@ -81,6 +81,13 @@ impl ShaderProgram {
             gl::Uniform1f(loc, val);
         }
     }
+
+    pub fn set_int(&mut self, name: &str, val: i32) {
+        let loc = self.get_uniform_location(name);
+        unsafe {
+            gl::Uniform1i(loc, val);
+        }
+    }
 }
 
 impl Drop for ShaderProgram {

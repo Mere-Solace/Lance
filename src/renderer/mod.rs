@@ -6,7 +6,7 @@ use hecs::World;
 use mesh::Mesh;
 use shader::ShaderProgram;
 
-use crate::components::{Color, GlobalTransform, MeshHandle};
+use crate::components::{Checkerboard, Color, GlobalTransform, MeshHandle};
 
 const VERT_SRC: &str = include_str!("../../shaders/cel.vert");
 const FRAG_SRC: &str = include_str!("../../shaders/cel.frag");
@@ -74,11 +74,17 @@ impl Renderer {
         self.shader.set_float("u_fog_start", 50.0);
         self.shader.set_float("u_fog_end", 300.0);
 
-        for (_entity, (global_transform, mesh_handle, color)) in
-            world.query::<(&GlobalTransform, &MeshHandle, &Color)>().iter()
+        for (_entity, (global_transform, mesh_handle, color, checker)) in
+            world.query::<(&GlobalTransform, &MeshHandle, &Color, Option<&Checkerboard>)>().iter()
         {
             self.shader.set_mat4("u_model", &global_transform.0);
             self.shader.set_vec3("u_object_color", color.0);
+            if let Some(checker) = checker {
+                self.shader.set_int("u_checkerboard", 1);
+                self.shader.set_vec3("u_object_color_2", checker.0);
+            } else {
+                self.shader.set_int("u_checkerboard", 0);
+            }
             meshes.get(*mesh_handle).draw();
         }
     }
