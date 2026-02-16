@@ -8,14 +8,14 @@ use camera::{Camera, CameraMode};
 use components::{
     add_child, Checkerboard, Children, Collider, Color, Drag, Friction, GlobalTransform, GrabState,
     Grabbable, GravityAffected, Grounded, Held, Hidden, LocalTransform, Mass, Player, Restitution,
-    Static, Velocity,
+    Static, SwordPosition, SwordState, Velocity,
 };
 use engine::input::{InputEvent, InputState};
 use engine::time::FrameTimer;
 use engine::window::GameWindow;
 use glam::{Mat4, Vec3};
 use hecs::World;
-use renderer::mesh::{create_capsule, create_ground_plane, create_sphere};
+use renderer::mesh::{create_capsule, create_ground_plane, create_sphere, create_sword};
 use renderer::{MeshStore, Renderer};
 use sdl2::keyboard::Scancode;
 use systems::{grab_throw_system, grounded_system, physics_system, player_movement_system, transform_propagation_system};
@@ -32,6 +32,7 @@ fn main() {
     let ground_handle = meshes.add(create_ground_plane(500.0));
     let capsule_handle = meshes.add(create_capsule(0.3, 1.0, 16, 16));
     let arm_handle = meshes.add(create_capsule(0.08, 0.5, 8, 8));
+    let sword_handle = meshes.add(create_sword());
 
     // ECS world — scene objects are entities with LocalTransform, GlobalTransform, MeshHandle, Color
     let mut world = World::new();
@@ -123,6 +124,40 @@ fn main() {
         add_child(&mut world, player_entity, right_arm);
     }
 
+    // Sword — child of the player, starts sheathed at the hip
+    {
+        use glam::Quat;
+        use std::f32::consts::FRAC_PI_6;
+        use std::f32::consts::FRAC_PI_2;
+
+        // Sheathed
+        let sheathed_pos = Vec3::new(0.25, 0.2, 0.0);
+        let sheathed_rot = Quat::from_rotation_y(FRAC_PI_2);
+        let sheathed_rot = Quat::from_rotation_x(2.0 * FRAC_PI_2 + FRAC_PI_6) * sheathed_rot;
+
+        let wielded_pos = Vec3::new(-0.25, 0.1, 0.6);
+        let wielded_rot = Quat::from_rotation_y(FRAC_PI_2);
+
+        let mut sword_t = LocalTransform::new(sheathed_pos);
+        sword_t.rotation = sheathed_rot;
+        sword_t.scale = Vec3::splat(3.0);
+
+        let sword_entity = world.spawn((
+            sword_t,
+            GlobalTransform(Mat4::IDENTITY),
+            sword_handle,
+            Color(Vec3::new(0.75, 0.75, 0.8)),
+            SwordState {
+                position: SwordPosition::Sheathed,
+                sheathed_pos,
+                sheathed_rot,
+                wielded_pos,
+                wielded_rot,
+            },
+        ));
+        add_child(&mut world, player_entity, sword_entity);
+    }
+
     sdl.mouse().set_relative_mouse_mode(true);
 
     let mut event_pump = sdl.event_pump().expect("Failed to get event pump");
@@ -150,15 +185,38 @@ fn main() {
                     if let Ok(children) = world.get::<&Children>(player_entity) {
                         to_toggle.extend(children.0.iter().copied());
                     }
-                    // Hide/show player body in first/third person (skip held objects)
+                    // Hide/show player body in first/third person
+                    // Skip held objects and sword (always visible)
                     for entity in to_toggle {
                         if world.get::<&Held>(entity).is_ok() {
                             continue;
                         }
-                        if camera.third_person {
+                        if world.get::<&SwordState>(entity).is_ok() {
+                            continue;
+                        }
+                        if camera.is_third_person() {
                             let _ = world.remove_one::<Hidden>(entity);
                         } else {
                             let _ = world.insert_one(entity, Hidden);
+                        }
+                    }
+                }
+                InputEvent::KeyPressed(Scancode::F) => {
+                    // Toggle sword between sheathed and wielded
+                    for (_e, (sword, lt)) in
+                        world.query_mut::<(&mut SwordState, &mut LocalTransform)>()
+                    {
+                        match sword.position {
+                            SwordPosition::Sheathed => {
+                                sword.position = SwordPosition::Wielded;
+                                lt.position = sword.wielded_pos;
+                                lt.rotation = sword.wielded_rot;
+                            }
+                            SwordPosition::Wielded => {
+                                sword.position = SwordPosition::Sheathed;
+                                lt.position = sword.sheathed_pos;
+                                lt.rotation = sword.sheathed_rot;
+                            }
                         }
                     }
                 }

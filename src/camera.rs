@@ -9,6 +9,13 @@ pub enum CameraMode {
     Fly,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Perspective {
+    FirstPerson,
+    ThirdPersonBack,
+    ThirdPersonFront,
+}
+
 pub struct Camera {
     pub position: Vec3,
     pub yaw: f32,
@@ -17,7 +24,7 @@ pub struct Camera {
     pub sensitivity: f32,
     pub fov: f32,
     pub mode: CameraMode,
-    pub third_person: bool,
+    pub perspective: Perspective,
 }
 
 impl Camera {
@@ -30,7 +37,7 @@ impl Camera {
             sensitivity: 0.1,
             fov: 45.0,
             mode: CameraMode::Player,
-            third_person: true,
+            perspective: Perspective::ThirdPersonBack,
         }
     }
 
@@ -42,18 +49,31 @@ impl Camera {
     }
 
     pub fn toggle_perspective(&mut self) {
-        self.third_person = !self.third_person;
+        self.perspective = match self.perspective {
+            Perspective::ThirdPersonBack => Perspective::ThirdPersonFront,
+            Perspective::ThirdPersonFront => Perspective::FirstPerson,
+            Perspective::FirstPerson => Perspective::ThirdPersonBack,
+        };
+    }
+
+    pub fn is_third_person(&self) -> bool {
+        matches!(self.perspective, Perspective::ThirdPersonBack | Perspective::ThirdPersonFront)
     }
 
     pub fn follow_player(&mut self, player_pos: Vec3, eye_height: f32, capsule_radius: f32) {
         let eye_pos = player_pos + Vec3::Y * eye_height;
-        if self.third_person {
-            // Place camera behind and above the player
-            let back = -self.front();
-            self.position = eye_pos + back * 3.0 + Vec3::Y * 0.5;
-        } else {
-            // Place camera just in front of capsule face to avoid clipping
-            self.position = eye_pos + self.front() * capsule_radius;
+        match self.perspective {
+            Perspective::ThirdPersonBack => {
+                let back = -self.front();
+                self.position = eye_pos + back * 3.0 + Vec3::Y * 0.5;
+            }
+            Perspective::ThirdPersonFront => {
+                let front = self.front();
+                self.position = eye_pos + front * 5.0 + Vec3::Y * 0.25;
+            }
+            Perspective::FirstPerson => {
+                self.position = eye_pos + self.front() * capsule_radius;
+            }
         }
     }
 
@@ -94,8 +114,14 @@ impl Camera {
     }
 
     pub fn view_matrix(&self) -> Mat4 {
-        let front = self.front();
-        Mat4::look_at_rh(self.position, self.position + front, Vec3::Y)
+        if self.perspective == Perspective::ThirdPersonFront {
+            // Look back toward the player (opposite of front direction)
+            let back = -self.front();
+            Mat4::look_at_rh(self.position, self.position + back, Vec3::Y)
+        } else {
+            let front = self.front();
+            Mat4::look_at_rh(self.position, self.position + front, Vec3::Y)
+        }
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {

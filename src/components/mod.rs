@@ -149,3 +149,19 @@ impl GrabState {
         }
     }
 }
+
+/// Whether the sword is sheathed at the hip or wielded in hand.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SwordPosition {
+    Sheathed,
+    Wielded,
+}
+
+/// State for the sword entity, attached to the sword child of the player.
+pub struct SwordState {
+    pub position: SwordPosition,
+    pub sheathed_pos: Vec3,
+    pub sheathed_rot: Quat,
+    pub wielded_pos: Vec3,
+    pub wielded_rot: Quat,
+}
