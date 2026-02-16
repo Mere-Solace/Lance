@@ -19,6 +19,9 @@ const MIN_THROW_FORCE: f32 = 5.0;
 const MAX_THROW_FORCE: f32 = 20.0;
 const MAX_WIND_UP_TIME: f32 = 0.75;
 const WIND_UP_MOVE_SLOWDOWN: f32 = 0.3;
+const VELOCITY_SMOOTHING: f32 = 15.0;
+const HELD_VELOCITY_DAMPER: f32 = 0.25;
+const PITCH_ROTATION_LERP_SPEED: f32 = 12.0;
 
 /// Grab/throw system. Returns movement speed multiplier (1.0 normal, 0.3 during wind-up).
 pub fn grab_throw_system(
@@ -52,9 +55,9 @@ pub fn grab_throw_system(
     let left_held = input.is_mouse_button_held(MouseButton::Left);
 
     // Read current grab state
-    let (held_entity, is_winding, wind_up_time, held_rotation) = {
+    let (held_entity, is_winding, wind_up_time, held_rotation, held_velocity) = {
         let grab = world.get::<&GrabState>(player_entity).unwrap();
-        (grab.held_entity, grab.is_winding, grab.wind_up_time, grab.held_rotation)
+        (grab.held_entity, grab.is_winding, grab.wind_up_time, grab.held_rotation, grab.held_velocity)
     };
 
     match held_entity {
@@ -105,6 +108,8 @@ pub fn grab_throw_system(
                     grab.held_rotation = local_rot;
                     grab.wind_up_time = 0.0;
                     grab.is_winding = false;
+                    grab.prev_world_pos = held_world_pos;
+                    grab.held_velocity = Vec3::ZERO;
                 }
             }
             1.0
@@ -136,25 +141,43 @@ pub fn grab_throw_system(
                 }
                 let _ = world.remove_one::<Held>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
-                    vel.0 = Vec3::ZERO;
+                    vel.0 = held_velocity;
                 }
                 let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                 grab.held_entity = None;
                 grab.wind_up_time = 0.0;
                 grab.is_winding = false;
+                grab.held_velocity = Vec3::ZERO;
                 return 1.0;
             }
 
-            // Lerp local position toward hold offset (player-relative)
-            // Keep the stored local rotation — object rotates with player via parenting
+            // Compute pitch rotation from camera and apply to hold offset + rotation
+            let pitch_quat = Quat::from_rotation_x(-camera.pitch.to_radians());
+            let target_pos = pitch_quat * HOLD_OFFSET;
+            let target_rot = pitch_quat * held_rotation;
+
+            // Lerp local position and rotation toward pitch-adjusted targets
             if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
-                let diff = HOLD_OFFSET - lt.position;
-                lt.position += diff * (HOLD_LERP_SPEED * dt).min(1.0);
-                lt.rotation = held_rotation;
+                let pos_diff = target_pos - lt.position;
+                lt.position += pos_diff * (HOLD_LERP_SPEED * dt).min(1.0);
+                lt.rotation = lt.rotation.slerp(target_rot, (PITCH_ROTATION_LERP_SPEED * dt).min(1.0));
             }
             // Zero velocity while held
             if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
                 vel.0 = Vec3::ZERO;
+            }
+
+            // Track world-space velocity of the held object
+            {
+                let (current_world_pos, _) = extract_world_transform(world, held);
+                let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
+                if dt > 0.0 {
+                    let frame_vel = (current_world_pos - grab.prev_world_pos) / dt;
+                    // Exponential smoothing to avoid jitter
+                    let smoothing = (VELOCITY_SMOOTHING * dt).min(1.0);
+                    grab.held_velocity = grab.held_velocity.lerp(frame_vel, smoothing);
+                }
+                grab.prev_world_pos = current_world_pos;
             }
 
             // Wind-up with left click
@@ -169,7 +192,7 @@ pub fn grab_throw_system(
             if left_click_released && is_winding {
                 let throw_t = (wind_up_time / MAX_WIND_UP_TIME).clamp(0.0, 1.0);
                 let force = MIN_THROW_FORCE + (MAX_THROW_FORCE - MIN_THROW_FORCE) * throw_t;
-                let throw_vel = camera.front() * force;
+                let throw_vel = camera.front() * force + HELD_VELOCITY_DAMPER * held_velocity;
 
                 // Read world transform from GlobalTransform before un-parenting
                 let (world_pos, world_rot) = extract_world_transform(world, held);
@@ -190,6 +213,7 @@ pub fn grab_throw_system(
                 grab.held_entity = None;
                 grab.wind_up_time = 0.0;
                 grab.is_winding = false;
+                grab.held_velocity = Vec3::ZERO;
                 return 1.0;
             }
 
