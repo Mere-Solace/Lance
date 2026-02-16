@@ -129,7 +129,7 @@ pub struct GrabState {
     pub held_entity: Option<Entity>,
     pub wind_up_time: f32,
     pub is_winding: bool,
-    /// World-space rotation of the held entity at grab time (preserved while held).
+    /// Player-local rotation of the held entity (rotates with player via parenting).
     pub held_rotation: Quat,
 }
 
