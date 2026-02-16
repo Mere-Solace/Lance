@@ -37,6 +37,10 @@ impl GameWindow {
         self.window.gl_swap_window();
     }
 
+    pub fn size(&self) -> (u32, u32) {
+        self.window.size()
+    }
+
     pub fn aspect_ratio(&self) -> f32 {
         let (w, h) = self.window.size();
         w as f32 / h as f32
