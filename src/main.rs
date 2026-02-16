@@ -4,6 +4,7 @@ mod engine;
 mod recording;
 mod renderer;
 mod systems;
+mod ui;
 
 use camera::{Camera, CameraMode};
 use clap::Parser;
@@ -22,6 +23,7 @@ use renderer::mesh::{create_capsule, create_ground_plane, create_sphere, create_
 use renderer::{MeshStore, Renderer};
 use sdl2::keyboard::Scancode;
 use systems::{grab_throw_system, grounded_system, physics_system, player_movement_system, transform_propagation_system};
+use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
 
 #[derive(Parser)]
 #[command(name = "lance", about = "Lance Engine")]
@@ -37,6 +39,9 @@ fn main() {
     let window = GameWindow::new(&sdl, "Lance Engine", 1280, 720);
 
     let mut renderer = Renderer::init();
+    let mut text_renderer = TextRenderer::new();
+    let mut pause_menu = PauseMenu::new();
+    let mut game_state = GameState::Running;
 
     // Mesh storage — entities reference meshes by handle
     let mut meshes = MeshStore::new();
@@ -239,90 +244,143 @@ fn main() {
             break;
         }
 
-        // F1 toggles fly/player mode, Z toggles first/third person
+        // Handle Escape toggle between Running and Paused
+        let mut just_paused = false;
         for event in &input.events {
-            match event {
-                InputEvent::KeyPressed(Scancode::F1) => camera.toggle_mode(),
-                InputEvent::KeyPressed(Scancode::Z) => {
-                    camera.toggle_perspective();
-                    // Collect player + children entity IDs
-                    let mut to_toggle = vec![player_entity];
-                    if let Ok(children) = world.get::<&Children>(player_entity) {
-                        to_toggle.extend(children.0.iter().copied());
+            if let InputEvent::KeyPressed(Scancode::Escape) = event {
+                if game_state == GameState::Running {
+                    game_state = GameState::Paused;
+                    pause_menu.reset_selection();
+                    sdl.mouse().set_relative_mouse_mode(false);
+                    just_paused = true;
+                }
+            }
+        }
+
+        // Route input based on game state
+        match game_state {
+            GameState::Paused => {
+                // Skip input on the frame we just entered pause (same Escape event would resume)
+                let action = if just_paused {
+                    PauseAction::None
+                } else {
+                    pause_menu.handle_input(&input.events)
+                };
+                match action {
+                    PauseAction::Resume => {
+                        game_state = GameState::Running;
+                        sdl.mouse().set_relative_mouse_mode(true);
                     }
-                    // Hide/show player body in first/third person
-                    // Skip held objects and sword (always visible)
-                    for entity in to_toggle {
-                        if world.get::<&Held>(entity).is_ok() {
-                            continue;
+                    PauseAction::Quit => break,
+                    PauseAction::None => {}
+                }
+            }
+            GameState::Running => {
+                // F1 toggles fly/player mode, Z toggles first/third person
+                for event in &input.events {
+                    match event {
+                        InputEvent::KeyPressed(Scancode::F1) => camera.toggle_mode(),
+                        InputEvent::KeyPressed(Scancode::Z) => {
+                            camera.toggle_perspective();
+                            // Collect player + children entity IDs
+                            let mut to_toggle = vec![player_entity];
+                            if let Ok(children) = world.get::<&Children>(player_entity) {
+                                to_toggle.extend(children.0.iter().copied());
+                            }
+                            // Hide/show player body in first/third person
+                            // Skip held objects and sword (always visible)
+                            for entity in to_toggle {
+                                if world.get::<&Held>(entity).is_ok() {
+                                    continue;
+                                }
+                                if world.get::<&SwordState>(entity).is_ok() {
+                                    continue;
+                                }
+                                if camera.is_third_person() {
+                                    let _ = world.remove_one::<Hidden>(entity);
+                                } else {
+                                    let _ = world.insert_one(entity, Hidden);
+                                }
+                            }
                         }
-                        if world.get::<&SwordState>(entity).is_ok() {
-                            continue;
+                        InputEvent::KeyPressed(Scancode::F) => {
+                            // Toggle sword between sheathed and wielded
+                            for (_e, (sword, lt)) in
+                                world.query_mut::<(&mut SwordState, &mut LocalTransform)>()
+                            {
+                                match sword.position {
+                                    SwordPosition::Sheathed => {
+                                        sword.position = SwordPosition::Wielded;
+                                        lt.position = sword.wielded_pos;
+                                        lt.rotation = sword.wielded_rot;
+                                    }
+                                    SwordPosition::Wielded => {
+                                        sword.position = SwordPosition::Sheathed;
+                                        lt.position = sword.sheathed_pos;
+                                        lt.rotation = sword.sheathed_rot;
+                                    }
+                                }
+                            }
                         }
-                        if camera.is_third_person() {
-                            let _ = world.remove_one::<Hidden>(entity);
-                        } else {
-                            let _ = world.insert_one(entity, Hidden);
-                        }
+                        _ => {}
                     }
                 }
-                InputEvent::KeyPressed(Scancode::F) => {
-                    // Toggle sword between sheathed and wielded
-                    for (_e, (sword, lt)) in
-                        world.query_mut::<(&mut SwordState, &mut LocalTransform)>()
-                    {
-                        match sword.position {
-                            SwordPosition::Sheathed => {
-                                sword.position = SwordPosition::Wielded;
-                                lt.position = sword.wielded_pos;
-                                lt.rotation = sword.wielded_rot;
-                            }
-                            SwordPosition::Wielded => {
-                                sword.position = SwordPosition::Sheathed;
-                                lt.position = sword.sheathed_pos;
-                                lt.rotation = sword.sheathed_rot;
-                            }
-                        }
+
+                camera.look(input.mouse_dx, input.mouse_dy);
+
+                // Grab/throw must run before player movement to produce speed multiplier
+                let speed_mult = if camera.mode == CameraMode::Player {
+                    grab_throw_system(&mut world, &input, &camera, timer.dt)
+                } else {
+                    1.0
+                };
+
+                match camera.mode {
+                    CameraMode::Player => {
+                        player_movement_system(&mut world, &input, &camera, speed_mult);
+                    }
+                    CameraMode::Fly => {
+                        camera.move_wasd(&input, timer.dt);
                     }
                 }
-                _ => {}
+
+                let collision_events = physics_system(&mut world, &mut physics_accum, timer.dt);
+                grounded_system(&mut world, &collision_events);
+
+                if camera.mode == CameraMode::Player {
+                    if let Ok(local) = world.get::<&LocalTransform>(player_entity) {
+                        camera.follow_player(local.position, 0.7, 0.3);
+                    }
+                }
             }
         }
 
-        camera.look(input.mouse_dx, input.mouse_dy);
-
-        // Grab/throw must run before player movement to produce speed multiplier
-        let speed_mult = if camera.mode == CameraMode::Player {
-            grab_throw_system(&mut world, &input, &camera, timer.dt)
-        } else {
-            1.0
-        };
-
-        match camera.mode {
-            CameraMode::Player => {
-                player_movement_system(&mut world, &input, &camera, speed_mult);
-            }
-            CameraMode::Fly => {
-                camera.move_wasd(&input, timer.dt);
-            }
-        }
-
-        let collision_events = physics_system(&mut world, &mut physics_accum, timer.dt);
-        grounded_system(&mut world, &collision_events);
-
-        if camera.mode == CameraMode::Player {
-            if let Ok(local) = world.get::<&LocalTransform>(player_entity) {
-                camera.follow_player(local.position, 0.7, 0.3);
-            }
-        }
-
-        // Propagate transforms before rendering
+        // Propagate transforms before rendering (always, even when paused)
         transform_propagation_system(&mut world);
 
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(window.aspect_ratio());
 
         renderer.draw_scene(&world, &meshes, &view, &proj, camera.position);
+
+        // UI pass — render on top of the scene
+        if game_state == GameState::Paused {
+            let (w, h) = window.size();
+            let ui_proj = Mat4::orthographic_rh_gl(0.0, w as f32, h as f32, 0.0, -1.0, 1.0);
+
+            unsafe {
+                gl::Disable(gl::DEPTH_TEST);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            }
+
+            pause_menu.draw(&mut text_renderer, w as f32, h as f32, &ui_proj);
+
+            unsafe {
+                gl::Disable(gl::BLEND);
+                gl::Enable(gl::DEPTH_TEST);
+            }
+        }
 
         if let Some(ref mut rec) = recorder {
             record_elapsed += timer.dt;

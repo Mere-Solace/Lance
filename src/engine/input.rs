@@ -86,10 +86,8 @@ impl InputState {
     }
 
     pub fn should_quit(&self) -> bool {
-        self.is_key_held(Scancode::Escape)
-            || self
-                .events
-                .iter()
-                .any(|e| matches!(e, InputEvent::Quit))
+        self.events
+            .iter()
+            .any(|e| matches!(e, InputEvent::Quit))
     }
 }
