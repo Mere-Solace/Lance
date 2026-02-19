@@ -1,6 +1,8 @@
 use glam::{Quat, Vec3};
 use hecs::Entity;
 
+use crate::fsm::StateMachine;
+
 /// Marker: this entity is the player.
 pub struct Player;
 
@@ -56,6 +58,48 @@ pub struct SwordState {
     pub wielded_pos: Vec3,
     pub wielded_rot: Quat,
 }
+
+// ---------------------------------------------------------------------------
+// Player state machine
+// ---------------------------------------------------------------------------
+
+/// All discrete states the player can be in.
+///
+/// Transition logic lives in `impl PlayerState` in `src/systems/player.rs`
+/// (where it has access to input and physics context) rather than here so
+/// that this file stays pure data.
+#[derive(Clone)]
+pub enum PlayerState {
+    /// Standing still, no movement input.
+    Idle,
+    /// Moving at walk speed.
+    Walking,
+    /// Sprint key held while moving.
+    Running,
+    /// Brief directional burst. Timer counts up; burst ends when it exceeds
+    /// `DASH_DURATION`. `cooldown_remaining` counts down after each dash.
+    Dashing {
+        direction: Vec3,
+        timer: f32,
+        cooldown_remaining: f32,
+    },
+    /// Ascending after jump input. `has_released_jump` tracks whether the
+    /// player let go of the jump key (for variable-height jump cut).
+    Jumping { has_released_jump: bool },
+    /// Airborne and descending (or walked off an edge).
+    Falling,
+    /// Brief recovery animation on ground contact. Timer counts up.
+    Landing { timer: f32 },
+    /// Sword transition: sheathing. Timer counts up.
+    Sheathing { timer: f32 },
+    /// Sword transition: unsheathing. Timer counts up.
+    Unsheathing { timer: f32 },
+}
+
+/// FSM component attached to the player entity.
+pub type PlayerFsm = StateMachine<PlayerState>;
+
+// ---------------------------------------------------------------------------
 
 /// Tracks the limb entities that make up the player's character body.
 /// Attached to the player entity for direct access to limbs.
