@@ -222,7 +222,7 @@ fn main() {
                 match camera.mode {
                     CameraMode::Player => {
                         player_state_system(&mut world, &input, timer.dt);
-                        player_movement_system(&mut world, &input, &camera, speed_mult);
+                        player_movement_system(&mut world, &input, &camera, speed_mult, timer.dt);
                     }
                     CameraMode::Fly => {
                         camera.move_wasd(&input, timer.dt);

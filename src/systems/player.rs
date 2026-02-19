@@ -6,7 +6,7 @@ use crate::camera::Camera;
 use crate::components::{
     CollisionEvent, Grounded, LocalTransform, Parent, Player, PlayerFsm, PlayerState, Velocity,
 };
-use crate::engine::input::{InputEvent, InputState};
+use crate::engine::input::InputState;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,8 +19,12 @@ const JUMP_IMPULSE: f32 = 7.0;
 // Stub durations for states not yet triggerable from input.
 // These keep the match exhaustive and ready for the issues that add them.
 const DASH_DURATION: f32 = 0.2;
-const LANDING_DURATION: f32 = 0.15;
+const LANDING_DURATION: f32 = 0.05; // short — just enough for a skid; no animation yet
 const SHEATHE_DURATION: f32 = 0.3;
+
+// Air control — reduced max speed + acceleration-based steering (not instant override)
+const AIR_CONTROL_SPEED: f32 = 4.0;  // max speed achievable through air input
+const AIR_ACCELERATION: f32 = 10.0;  // m/s² added per second toward desired direction
 
 // ---------------------------------------------------------------------------
 // PlayerState transition logic
@@ -116,22 +120,35 @@ impl PlayerState {
         }
     }
 
-    /// Horizontal move speed for this state.
-    /// `None` = airborne — don't override horizontal velocity; let physics run.
+    /// Whether this state is airborne (player has partial air-steering control
+    /// but not direct velocity override). Checked by `player_movement_system`.
+    pub fn is_airborne(&self) -> bool {
+        matches!(self, Self::Jumping { .. } | Self::Falling)
+    }
+
+    /// Horizontal move speed for grounded states.
+    /// - `Some(speed)` → directly set horizontal velocity to this speed.
+    /// - `None`        → leave velocity untouched (airborne OR locked states).
+    ///
+    /// Call `is_airborne()` first; if true, use air-control path instead.
     pub fn move_speed(&self) -> Option<f32> {
         match self {
-            Self::Idle        => Some(0.0),
-            Self::Walking     => Some(PLAYER_WALK_SPEED),
-            Self::Running     => Some(PLAYER_RUN_SPEED),
+            Self::Idle    => Some(0.0),
+            Self::Walking => Some(PLAYER_WALK_SPEED),
+            Self::Running => Some(PLAYER_RUN_SPEED),
+            // Airborne: handled by is_airborne() path — should not reach here.
             Self::Jumping { .. } | Self::Falling => None,
-            // Dashing / Landing / Sheathing / Unsheathing: player-locked, no input movement.
-            _ => Some(0.0),
+            // Locked states (Dashing, Landing, Sheathing, Unsheathing):
+            // leave velocity alone so momentum carries through the state.
+            _ => None,
         }
     }
 
     /// Whether jump input is accepted in this state.
+    /// Landing is included so a buffered jump (Space held through landing)
+    /// fires on the first frame of ground contact.
     pub fn can_jump(&self) -> bool {
-        matches!(self, Self::Idle | Self::Walking | Self::Running)
+        matches!(self, Self::Idle | Self::Walking | Self::Running | Self::Landing { .. })
     }
 }
 
@@ -146,13 +163,11 @@ fn check_global_transitions(
     input: &InputState,
     grounded: bool,
 ) -> Option<PlayerState> {
-    // Jump: from any grounded state that permits it, on the frame Space is pressed.
-    if grounded && state.can_jump() {
-        for event in &input.events {
-            if let InputEvent::KeyPressed(Scancode::Space) = event {
-                return Some(PlayerState::Jumping { has_released_jump: false });
-            }
-        }
+    // Jump: from any grounded state that permits it.
+    // Using is_key_held (not just KeyPressed) so holding Space through a fall
+    // immediately re-triggers the jump on landing — a simple jump buffer.
+    if grounded && state.can_jump() && input.is_key_held(Scancode::Space) {
+        return Some(PlayerState::Jumping { has_released_jump: false });
     }
 
     // Walked off an edge: was in a ground-locomotion state but ground was lost.
@@ -221,16 +236,33 @@ pub fn player_state_system(world: &mut World, input: &InputState, dt: f32) {
 }
 
 /// Apply movement based on the current FSM state.
-/// Reads `PlayerFsm` for speed; jump velocity is already applied by `player_state_system`.
+/// Jump velocity is already applied by `player_state_system`.
+///
+/// Three movement modes:
+/// - **Ground** (Idle/Walking/Running): directly set horizontal velocity.
+/// - **Air** (Jumping/Falling): acceleration-based steering at reduced speed;
+///   no input = velocity untouched (no air braking).
+/// - **Locked** (Landing/Dashing/Sheathing): leave velocity alone so momentum
+///   carries through the state naturally.
 pub fn player_movement_system(
     world: &mut World,
     input: &InputState,
     camera: &Camera,
     speed_multiplier: f32,
+    dt: f32,
 ) {
     let yaw_rad = camera.yaw.to_radians();
     let forward = Vec3::new(yaw_rad.cos(), 0.0, yaw_rad.sin()).normalize();
     let right = forward.cross(Vec3::Y).normalize();
+
+    // Build input direction once outside the loop.
+    let mut move_dir = Vec3::ZERO;
+    if input.is_key_held(Scancode::W) { move_dir += forward; }
+    if input.is_key_held(Scancode::S) { move_dir -= forward; }
+    if input.is_key_held(Scancode::A) { move_dir -= right; }
+    if input.is_key_held(Scancode::D) { move_dir += right; }
+    let has_input = move_dir.length_squared() > 0.0;
+    let move_dir_norm = if has_input { move_dir.normalize() } else { Vec3::ZERO };
 
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
@@ -238,23 +270,28 @@ pub fn player_movement_system(
         // Always rotate the player mesh to face camera yaw.
         local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
 
-        // Horizontal velocity only when the state grants a non-None speed.
-        if let Some(speed) = fsm.state.move_speed() {
-            let mut move_dir = Vec3::ZERO;
-            if input.is_key_held(Scancode::W) { move_dir += forward; }
-            if input.is_key_held(Scancode::S) { move_dir -= forward; }
-            if input.is_key_held(Scancode::A) { move_dir -= right; }
-            if input.is_key_held(Scancode::D) { move_dir += right; }
-
-            let horizontal = if move_dir.length_squared() > 0.0 {
-                move_dir.normalize() * speed * speed_multiplier
-            } else {
-                Vec3::ZERO
-            };
+        if fsm.state.is_airborne() {
+            // Air control: nudge velocity toward desired direction.
+            // No input = velocity preserved (no air friction from player).
+            if has_input {
+                let desired_x = move_dir_norm.x * AIR_CONTROL_SPEED * speed_multiplier;
+                let desired_z = move_dir_norm.z * AIR_CONTROL_SPEED * speed_multiplier;
+                let diff_x = desired_x - vel.0.x;
+                let diff_z = desired_z - vel.0.z;
+                let dist = (diff_x * diff_x + diff_z * diff_z).sqrt();
+                if dist > 0.0 {
+                    let step = (AIR_ACCELERATION * dt).min(dist);
+                    vel.0.x += diff_x / dist * step;
+                    vel.0.z += diff_z / dist * step;
+                }
+            }
+        } else if let Some(speed) = fsm.state.move_speed() {
+            // Ground: directly override horizontal velocity.
+            let horizontal = move_dir_norm * speed * speed_multiplier;
             vel.0.x = horizontal.x;
             vel.0.z = horizontal.z;
         }
-        // Airborne states (None speed): leave horizontal velocity untouched.
+        // else Locked (Landing, Dashing, Sheathing, etc.): leave velocity alone.
     }
 }
 
