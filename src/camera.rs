@@ -192,14 +192,22 @@ impl Camera {
         }
     }
 
-    /// Advance the camera yaw back toward `character_yaw` at a fixed angular speed.
+    /// Advance the camera yaw back toward `character_yaw` with proportional ease-out.
+    /// Speed scales with angular distance (fast when far, slows moderately when close).
     /// Returns `true` when the target is reached.
     pub fn tick_free_look_return(&mut self, dt: f32) -> bool {
-        const RETURN_SPEED: f32 = 180.0; // degrees per second — "medium" snap-back
+        // Degrees/s per degree of remaining separation — gives the ease-out curve.
+        const SPEED_FACTOR: f32 = 3.5;
+        // Floor speed so the camera doesn't crawl at the end.
+        const MIN_SPEED: f32 = 60.0;
+
         let diff = self.character_yaw - self.yaw;
         // Normalise to the shortest path in [-180, 180].
         let diff = diff - 360.0 * (diff / 360.0).round();
-        let step = RETURN_SPEED * dt;
+
+        let speed = (diff.abs() * SPEED_FACTOR).max(MIN_SPEED);
+        let step = speed * dt;
+
         if diff.abs() <= step {
             self.yaw = self.character_yaw;
             true
