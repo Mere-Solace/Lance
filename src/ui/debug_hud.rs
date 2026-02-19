@@ -16,6 +16,10 @@ pub struct DebugHud {
     fps_ring: [f32; FPS_SAMPLES],
     fps_index: usize,
     fps_count: usize,
+    /// Accumulates real time between 1-second FPS refreshes.
+    fps_timer: f32,
+    /// Last computed SMA FPS, updated once per second.
+    displayed_fps: f32,
 }
 
 impl DebugHud {
@@ -25,6 +29,8 @@ impl DebugHud {
             fps_ring: [0.0; FPS_SAMPLES],
             fps_index: 0,
             fps_count: 0,
+            fps_timer: 0.0,
+            displayed_fps: 0.0,
         }
     }
 
@@ -36,33 +42,42 @@ impl DebugHud {
         self.visible
     }
 
-    /// Push a frame delta into the rolling FPS buffer. Call every frame when visible.
+    /// Push a frame delta into the rolling buffer and refresh the displayed FPS
+    /// once per second. Call every frame when visible.
     pub fn update(&mut self, dt: f32) {
         self.fps_ring[self.fps_index] = dt;
         self.fps_index = (self.fps_index + 1) % FPS_SAMPLES;
         if self.fps_count < FPS_SAMPLES {
             self.fps_count += 1;
         }
+
+        self.fps_timer += dt;
+        if self.fps_timer >= 1.0 {
+            self.fps_timer = 0.0;
+            if self.fps_count > 0 {
+                let sum: f32 = self.fps_ring[..self.fps_count].iter().sum();
+                self.displayed_fps = self.fps_count as f32 / sum;
+            }
+        }
     }
 
-    /// Render HUD lines at the top-left of the screen. Caller must set up the
-    /// orthographic projection and GL blend state before calling.
-    pub fn draw(&self, text_renderer: &mut TextRenderer, camera: &Camera, projection: &Mat4) {
-        let fps = if self.fps_count == 0 {
-            0.0
-        } else {
-            let sum: f32 = self.fps_ring[..self.fps_count].iter().sum();
-            self.fps_count as f32 / sum
-        };
-
-        let pos = camera.position;
-        let yaw = camera.yaw.to_degrees();
-        let pitch = camera.pitch.to_degrees();
+    /// Render HUD lines at the top-left of the screen.
+    ///
+    /// `pos` — world position to display. In Player mode pass the player body
+    /// position; in Fly mode pass `camera.position`.
+    ///
+    /// Caller must set up the orthographic projection and GL blend state.
+    pub fn draw(&self, text_renderer: &mut TextRenderer, pos: Vec3, camera: &Camera, projection: &Mat4) {
+        // Yaw: 0 = +X axis, counterclockwise increases, wraps [0, 360).
+        // camera.yaw is stored in degrees; negate so CCW (left turn) increases.
+        let yaw = (-camera.yaw).rem_euclid(360.0);
+        // Pitch is stored in degrees and already clamped to [-89, 89] by camera.look().
+        let pitch = camera.pitch;
 
         let x = HUD_MARGIN;
         let y = HUD_MARGIN;
 
-        let line0 = format!("FPS: {:.0}", fps);
+        let line0 = format!("FPS: {:.0}", self.displayed_fps);
         let line1 = format!("Pos: {:.2} {:.2} {:.2}", pos.x, pos.y, pos.z);
         let line2 = format!("Yaw: {:.1}  Pitch: {:.1}", yaw, pitch);
 
