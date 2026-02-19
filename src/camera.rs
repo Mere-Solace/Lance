@@ -48,6 +48,10 @@ pub struct Camera {
     pub perspective: Perspective,
     /// Whether the player is holding free-look (C): camera pans without rotating the character.
     pub free_look: bool,
+    /// True while the camera is interpolating back toward `character_yaw` after free-look release.
+    pub free_look_return: bool,
+    /// The yaw the player body is facing — captured every frame when not in free-look.
+    pub character_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
     pub arm_length_back: f32,
     /// User-controlled (zoom) arm length for third-person front. Clamped [ARM_MIN, ARM_MAX].
@@ -70,6 +74,8 @@ impl Camera {
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
+            free_look_return: false,
+            character_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
             effective_arm_back: DEFAULT_ARM_BACK,
@@ -183,6 +189,23 @@ impl Camera {
 
                 self.position = eye + ray_dir * *eff;
             }
+        }
+    }
+
+    /// Advance the camera yaw back toward `character_yaw` at a fixed angular speed.
+    /// Returns `true` when the target is reached.
+    pub fn tick_free_look_return(&mut self, dt: f32) -> bool {
+        const RETURN_SPEED: f32 = 180.0; // degrees per second — "medium" snap-back
+        let diff = self.character_yaw - self.yaw;
+        // Normalise to the shortest path in [-180, 180].
+        let diff = diff - 360.0 * (diff / 360.0).round();
+        let step = RETURN_SPEED * dt;
+        if diff.abs() <= step {
+            self.yaw = self.character_yaw;
+            true
+        } else {
+            self.yaw += diff.signum() * step;
+            false
         }
     }
 

@@ -269,7 +269,7 @@ pub fn player_movement_system(
     {
         // Rotate the player mesh to face camera yaw, unless free-look is active
         // (alt-look: camera pans freely, character facing stays fixed).
-        if !camera.free_look {
+        if !camera.free_look && !camera.free_look_return {
             local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
         }
 
