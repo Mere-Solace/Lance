@@ -30,6 +30,9 @@ pub fn raycast_grabbable(
             Collider::Capsule { radius, height } => {
                 ray_capsule_intersection(origin, dir, center, *radius, *height)
             }
+            Collider::Box { half_extents } => {
+                ray_aabb_intersection(origin, dir, center, *half_extents)
+            }
             Collider::Plane { .. } => None,
         };
 
@@ -96,4 +99,26 @@ fn ray_capsule_intersection(
         .filter_map(|t| *t)
         .filter(|t| *t > 0.0)
         .reduce(f32::min)
+}
+
+fn ray_aabb_intersection(origin: Vec3, dir: Vec3, center: Vec3, half: Vec3) -> Option<f32> {
+    let min = center - half;
+    let max = center + half;
+    let inv_dir = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+
+    let t1 = (min.x - origin.x) * inv_dir.x;
+    let t2 = (max.x - origin.x) * inv_dir.x;
+    let t3 = (min.y - origin.y) * inv_dir.y;
+    let t4 = (max.y - origin.y) * inv_dir.y;
+    let t5 = (min.z - origin.z) * inv_dir.z;
+    let t6 = (max.z - origin.z) * inv_dir.z;
+
+    let tmin = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
+    let tmax = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
+
+    if tmax < 0.0 || tmin > tmax {
+        return None;
+    }
+    // If tmin < 0, ray starts inside the box — return tmax
+    Some(if tmin < 0.0 { tmax } else { tmin })
 }

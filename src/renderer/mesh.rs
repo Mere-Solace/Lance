@@ -260,6 +260,79 @@ pub fn create_box(width: f32, height: f32, depth: f32) -> Mesh {
     upload_mesh(&vertices, &indices)
 }
 
+/// Create a tapered box (rectangular prism where top and bottom can have different dimensions).
+/// Top face has dimensions `top_w × top_d`, bottom face has `bot_w × bot_d`.
+/// Side face normals are computed via cross products for correct trapezoid normals.
+#[allow(dead_code)]
+pub fn create_tapered_box(top_w: f32, top_d: f32, bot_w: f32, bot_d: f32, height: f32) -> Mesh {
+    let hh = height * 0.5;
+    let htw = top_w * 0.5;
+    let htd = top_d * 0.5;
+    let hbw = bot_w * 0.5;
+    let hbd = bot_d * 0.5;
+
+    // 8 corner positions
+    // Top: 0=(-htw, +hh, +htd), 1=(+htw, +hh, +htd), 2=(+htw, +hh, -htd), 3=(-htw, +hh, -htd)
+    // Bot: 4=(-hbw, -hh, +hbd), 5=(+hbw, -hh, +hbd), 6=(+hbw, -hh, -hbd), 7=(-hbw, -hh, -hbd)
+    let corners: [[f32; 3]; 8] = [
+        [-htw,  hh,  htd], // 0: top-left-front
+        [ htw,  hh,  htd], // 1: top-right-front
+        [ htw,  hh, -htd], // 2: top-right-back
+        [-htw,  hh, -htd], // 3: top-left-back
+        [-hbw, -hh,  hbd], // 4: bot-left-front
+        [ hbw, -hh,  hbd], // 5: bot-right-front
+        [ hbw, -hh, -hbd], // 6: bot-right-back
+        [-hbw, -hh, -hbd], // 7: bot-left-back
+    ];
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Helper: add a quad face (4 vertices, 2 triangles) with a given normal
+    let mut add_quad = |c0: [f32; 3], c1: [f32; 3], c2: [f32; 3], c3: [f32; 3], nx: f32, ny: f32, nz: f32| {
+        let base = vertices.len() as u32 / 6;
+        for c in &[c0, c1, c2, c3] {
+            vertices.extend_from_slice(&[c[0], c[1], c[2], nx, ny, nz]);
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+
+    // Helper: compute face normal from cross product of two edges
+    let face_normal = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| -> [f32; 3] {
+        let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let nx = e1[1] * e2[2] - e1[2] * e2[1];
+        let ny = e1[2] * e2[0] - e1[0] * e2[2];
+        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len < 1e-12 { [0.0, 1.0, 0.0] } else { [nx / len, ny / len, nz / len] }
+    };
+
+    // Top face (+Y): corners 0, 1, 2, 3
+    add_quad(corners[0], corners[1], corners[2], corners[3], 0.0, 1.0, 0.0);
+
+    // Bottom face (-Y): corners 7, 6, 5, 4 (wound CCW from below)
+    add_quad(corners[7], corners[6], corners[5], corners[4], 0.0, -1.0, 0.0);
+
+    // Front face (+Z): corners 0, 4, 5, 1 (top-left-front -> bot-left-front -> bot-right-front -> top-right-front)
+    let n = face_normal(corners[0], corners[4], corners[1]);
+    add_quad(corners[0], corners[4], corners[5], corners[1], n[0], n[1], n[2]);
+
+    // Back face (-Z): corners 2, 6, 7, 3 (top-right-back -> bot-right-back -> bot-left-back -> top-left-back)
+    let n = face_normal(corners[2], corners[6], corners[3]);
+    add_quad(corners[2], corners[6], corners[7], corners[3], n[0], n[1], n[2]);
+
+    // Right face (+X): corners 1, 5, 6, 2
+    let n = face_normal(corners[1], corners[5], corners[2]);
+    add_quad(corners[1], corners[5], corners[6], corners[2], n[0], n[1], n[2]);
+
+    // Left face (-X): corners 3, 7, 4, 0
+    let n = face_normal(corners[3], corners[7], corners[0]);
+    add_quad(corners[3], corners[7], corners[4], corners[0], n[0], n[1], n[2]);
+
+    upload_mesh(&vertices, &indices)
+}
+
 #[allow(dead_code)]
 pub fn create_cylinder(radius: f32, height: f32, segments: u32) -> Mesh {
     let mut vertices = Vec::new();
