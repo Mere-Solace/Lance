@@ -267,9 +267,13 @@ pub fn player_movement_system(
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
-        // Rotate the player mesh to face camera yaw, unless free-look is active
-        // (alt-look: camera pans freely, character facing stays fixed).
-        if !camera.free_look && !camera.free_look_return {
+        // Rotate the player mesh to face camera yaw, unless free-look is active.
+        // During the return lerp, re-engage body rotation after a short grace period so
+        // movement direction and facing track the returning camera instead of lagging behind.
+        const FREE_LOOK_RETURN_GRACE: f32 = 0.1;
+        let body_follows_camera = !camera.free_look
+            && (!camera.free_look_return || camera.free_look_return_elapsed >= FREE_LOOK_RETURN_GRACE);
+        if body_follows_camera {
             local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
         }
 

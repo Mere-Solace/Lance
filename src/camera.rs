@@ -50,6 +50,8 @@ pub struct Camera {
     pub free_look: bool,
     /// True while the camera is interpolating back toward `character_yaw` after free-look release.
     pub free_look_return: bool,
+    /// Seconds elapsed since the current free-look return started.
+    pub free_look_return_elapsed: f32,
     /// The yaw the player body is facing — captured every frame when not in free-look.
     pub character_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
@@ -75,6 +77,7 @@ impl Camera {
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
             free_look_return: false,
+            free_look_return_elapsed: 0.0,
             character_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
@@ -200,6 +203,8 @@ impl Camera {
         const SPEED_FACTOR: f32 = 3.5;
         // Floor speed so the camera doesn't crawl at the end.
         const MIN_SPEED: f32 = 60.0;
+
+        self.free_look_return_elapsed += dt;
 
         let diff = self.character_yaw - self.yaw;
         // Normalise to the shortest path in [-180, 180].

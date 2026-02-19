@@ -186,6 +186,7 @@ impl GameApp {
         } else if was_free_look {
             // C was just released: lerp the camera back to the character-facing yaw.
             self.camera.free_look_return = true;
+            self.camera.free_look_return_elapsed = 0.0;
         }
 
         // Scroll wheel zoom.
