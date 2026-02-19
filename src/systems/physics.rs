@@ -7,14 +7,22 @@ use super::collision::collision_system;
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 const GRAVITY: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 
-/// Returns all collision events and the interpolation alpha (0..1) for the current render frame.
+/// Returns all collision events, the interpolation alpha (0..1), and the number of physics
+/// ticks that ran this frame.
+///
 /// alpha = remaining_accumulator / PHYSICS_DT — used to lerp between previous and current
 /// physics positions in the transform propagation system.
-pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -> (Vec<CollisionEvent>, f32) {
+///
+/// The tick count is used by `grounded_system` to skip clearing the Grounded marker on
+/// frames where no physics ticks ran (high framerate case), preventing false Falling
+/// transitions when the render rate exceeds the fixed physics rate.
+pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -> (Vec<CollisionEvent>, f32, usize) {
     *accumulator += frame_dt;
     let mut all_events = Vec::new();
+    let mut ticks = 0usize;
 
     while *accumulator >= PHYSICS_DT {
+        ticks += 1;
         // Snapshot previous positions for render interpolation.
         // Collect first (drops the borrow), then insert/update.
         let prev_snapshots: Vec<(Entity, Vec3)> = world
@@ -69,5 +77,5 @@ pub fn physics_system(world: &mut World, accumulator: &mut f32, frame_dt: f32) -
     // alpha: how far into the next physics step this render frame falls.
     // Used to interpolate entity positions for smooth rendering.
     let alpha = *accumulator / PHYSICS_DT;
-    (all_events, alpha)
+    (all_events, alpha, ticks)
 }

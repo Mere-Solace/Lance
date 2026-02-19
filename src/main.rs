@@ -222,17 +222,17 @@ fn main() {
                 match camera.mode {
                     CameraMode::Player => {
                         player_state_system(&mut world, &input, timer.dt);
-                        player_movement_system(&mut world, &input, &camera, speed_mult);
+                        player_movement_system(&mut world, &input, &camera, speed_mult, timer.dt);
                     }
                     CameraMode::Fly => {
                         camera.move_wasd(&input, timer.dt);
                     }
                 }
 
-                let (collision_events, frame_alpha) =
+                let (collision_events, frame_alpha, physics_ticks) =
                     physics_system(&mut world, &mut physics_accum, timer.dt);
                 alpha = frame_alpha;
-                grounded_system(&mut world, &collision_events);
+                grounded_system(&mut world, &collision_events, physics_ticks);
 
                 if camera.mode == CameraMode::Player {
                     // Use interpolated player position so the camera follows
