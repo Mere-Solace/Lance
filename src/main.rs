@@ -25,7 +25,7 @@ use systems::{
     collision_system, grab_throw_system, grounded_system, physics_step, player_movement_system,
     player_state_system, raycast_static, transform_propagation_system, PHYSICS_DT,
 };
-use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
+use ui::{DebugHud, GameState, PauseAction, PauseMenu, TextRenderer};
 
 #[derive(Parser)]
 #[command(name = "lance", about = "Lance Engine")]
@@ -43,6 +43,7 @@ fn main() {
     let mut renderer = Renderer::init();
     let mut text_renderer = TextRenderer::new();
     let mut pause_menu = PauseMenu::new();
+    let mut debug_hud = DebugHud::new();
     let mut game_state = GameState::Running;
 
     let mut world = World::new();
@@ -111,10 +112,11 @@ fn main() {
                 }
             }
             GameState::Running => {
-                // F1 toggles fly/player mode, Z toggles first/third person
+                // F1 toggles fly/player mode, F3 toggles debug HUD, Z toggles first/third person
                 for event in &input.events {
                     match event {
                         InputEvent::KeyPressed(Scancode::F1) => camera.toggle_mode(),
+                        InputEvent::KeyPressed(Scancode::F3) => debug_hud.toggle(),
                         InputEvent::KeyPressed(Scancode::Z) => {
                             camera.toggle_perspective();
                             // Collect player + children entity IDs
@@ -200,6 +202,10 @@ fn main() {
                 alpha = physics_accum / PHYSICS_DT;
                 grounded_system(&mut world, &collision_events, physics_ticks);
 
+                if debug_hud.is_visible() {
+                    debug_hud.update(timer.dt);
+                }
+
                 if camera.mode == CameraMode::Player {
                     // Use interpolated player position so the camera follows
                     // smoothly between fixed physics ticks.
@@ -246,6 +252,25 @@ fn main() {
             }
 
             pause_menu.draw(&mut text_renderer, w as f32, h as f32, &ui_proj);
+
+            unsafe {
+                gl::Disable(gl::BLEND);
+                gl::Enable(gl::DEPTH_TEST);
+            }
+        }
+
+        // Debug HUD — always on top, independent of game state
+        if debug_hud.is_visible() {
+            let (w, h) = window.size();
+            let ui_proj = Mat4::orthographic_rh_gl(0.0, w as f32, h as f32, 0.0, -1.0, 1.0);
+
+            unsafe {
+                gl::Disable(gl::DEPTH_TEST);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            }
+
+            debug_hud.draw(&mut text_renderer, &camera, &ui_proj);
 
             unsafe {
                 gl::Disable(gl::BLEND);
