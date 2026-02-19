@@ -23,7 +23,7 @@ use scene::test_scene::load_test_scene;
 use sdl2::keyboard::Scancode;
 use systems::{
     collision_system, grab_throw_system, grounded_system, physics_step, player_movement_system,
-    player_state_system, transform_propagation_system, PHYSICS_DT,
+    player_state_system, raycast_static, transform_propagation_system, PHYSICS_DT,
 };
 use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
 
@@ -161,6 +161,14 @@ fn main() {
                     }
                 }
 
+                // Free-look (hold C): camera pans without rotating the character.
+                camera.free_look = input.is_key_held(Scancode::C);
+
+                // Scroll wheel zoom.
+                if input.scroll_dy != 0.0 {
+                    camera.apply_zoom(input.scroll_dy);
+                }
+
                 camera.look(input.mouse_dx, input.mouse_dy);
 
                 // Grab/throw must run before player movement to produce speed multiplier
@@ -203,7 +211,16 @@ fn main() {
                         (Ok(local), _) => local.position,
                         _ => Vec3::ZERO,
                     };
-                    camera.follow_player(player_pos, 0.7, 0.3);
+                    // Compute desired camera position, raycast for wall occlusion, apply.
+                    let (eye, desired) = camera.desired_follow_pos(player_pos, 0.7, 0.3);
+                    let ray_to_desired = desired - eye;
+                    let max_dist = ray_to_desired.length();
+                    let hit_dist = if max_dist > 1e-6 && camera.is_third_person() {
+                        raycast_static(&world, eye, ray_to_desired / max_dist, max_dist)
+                    } else {
+                        None
+                    };
+                    camera.apply_occlusion(eye, desired, hit_dist, timer.dt);
                 }
             }
         }

@@ -11,6 +11,8 @@ pub enum InputEvent {
     MouseButtonPressed(MouseButton),
     MouseButtonReleased(MouseButton),
     MouseMotion { dx: f32, dy: f32 },
+    /// Scroll wheel delta: positive = scroll up (zoom in), negative = scroll down (zoom out).
+    MouseWheel { dy: f32 },
     Quit,
 }
 
@@ -19,6 +21,8 @@ pub struct InputState {
     pub mouse_buttons: HashSet<MouseButton>,
     pub mouse_dx: f32,
     pub mouse_dy: f32,
+    /// Accumulated scroll wheel delta this frame (positive = up).
+    pub scroll_dy: f32,
     pub events: Vec<InputEvent>,
 }
 
@@ -29,6 +33,7 @@ impl InputState {
             mouse_buttons: HashSet::new(),
             mouse_dx: 0.0,
             mouse_dy: 0.0,
+            scroll_dy: 0.0,
             events: Vec::new(),
         }
     }
@@ -36,6 +41,7 @@ impl InputState {
     pub fn update(&mut self, event_pump: &mut EventPump) {
         self.mouse_dx = 0.0;
         self.mouse_dy = 0.0;
+        self.scroll_dy = 0.0;
         self.events.clear();
 
         for event in event_pump.poll_iter() {
@@ -71,6 +77,11 @@ impl InputState {
                     self.mouse_dx += dx;
                     self.mouse_dy += dy;
                     self.events.push(InputEvent::MouseMotion { dx, dy });
+                }
+                Event::MouseWheel { y, .. } => {
+                    let dy = y as f32;
+                    self.scroll_dy += dy;
+                    self.events.push(InputEvent::MouseWheel { dy });
                 }
                 _ => {}
             }

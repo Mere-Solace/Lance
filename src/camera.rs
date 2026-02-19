@@ -16,6 +16,27 @@ pub enum Perspective {
     ThirdPersonFront,
 }
 
+/// Default arm lengths (distance from player eye to camera).
+const DEFAULT_ARM_BACK: f32 = 3.0;
+const DEFAULT_ARM_FRONT: f32 = 5.0;
+
+/// Zoom clamp ranges for third-person arm length.
+const ARM_MIN: f32 = 1.0;
+const ARM_MAX: f32 = 8.0;
+
+/// First-person FOV zoom range (degrees).
+const FOV_MIN: f32 = 20.0;
+const FOV_MAX: f32 = 70.0;
+
+/// Clearance between camera and wall surface (to avoid z-fighting).
+const WALL_CLEARANCE: f32 = 0.3;
+
+/// Minimum arm length regardless of wall distance.
+const MIN_ARM: f32 = 0.3;
+
+/// Speed at which the camera arm recovers toward full length after a wall clip (units/s).
+const ARM_RECOVERY_SPEED: f32 = 4.0;
+
 pub struct Camera {
     pub position: Vec3,
     pub yaw: f32,
@@ -25,6 +46,16 @@ pub struct Camera {
     pub fov: f32,
     pub mode: CameraMode,
     pub perspective: Perspective,
+    /// Whether the player is holding free-look (C): camera pans without rotating the character.
+    pub free_look: bool,
+    /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
+    pub arm_length_back: f32,
+    /// User-controlled (zoom) arm length for third-person front. Clamped [ARM_MIN, ARM_MAX].
+    pub arm_length_front: f32,
+    /// Current effective back arm length, reduced by wall collision and smoothly recovered.
+    effective_arm_back: f32,
+    /// Current effective front arm length, reduced by wall collision and smoothly recovered.
+    effective_arm_front: f32,
 }
 
 impl Camera {
@@ -38,6 +69,11 @@ impl Camera {
             fov: 45.0,
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
+            free_look: false,
+            arm_length_back: DEFAULT_ARM_BACK,
+            arm_length_front: DEFAULT_ARM_FRONT,
+            effective_arm_back: DEFAULT_ARM_BACK,
+            effective_arm_front: DEFAULT_ARM_FRONT,
         }
     }
 
@@ -48,31 +84,104 @@ impl Camera {
         };
     }
 
+    /// Cycle perspective and reset zoom state to defaults.
     pub fn toggle_perspective(&mut self) {
         self.perspective = match self.perspective {
             Perspective::ThirdPersonBack => Perspective::ThirdPersonFront,
             Perspective::ThirdPersonFront => Perspective::FirstPerson,
             Perspective::FirstPerson => Perspective::ThirdPersonBack,
         };
+        // Reset zoom to default on mode switch (AC: "Zoom state resets to default").
+        self.arm_length_back = DEFAULT_ARM_BACK;
+        self.arm_length_front = DEFAULT_ARM_FRONT;
+        self.effective_arm_back = DEFAULT_ARM_BACK;
+        self.effective_arm_front = DEFAULT_ARM_FRONT;
+        self.fov = 45.0;
     }
 
     pub fn is_third_person(&self) -> bool {
         matches!(self.perspective, Perspective::ThirdPersonBack | Perspective::ThirdPersonFront)
     }
 
-    pub fn follow_player(&mut self, player_pos: Vec3, eye_height: f32, capsule_radius: f32) {
-        let eye_pos = player_pos + Vec3::Y * eye_height;
+    /// Adjust zoom based on scroll input. Third-person adjusts arm length; first-person adjusts FOV.
+    pub fn apply_zoom(&mut self, scroll_dy: f32) {
         match self.perspective {
             Perspective::ThirdPersonBack => {
+                self.arm_length_back = (self.arm_length_back - scroll_dy * 0.5).clamp(ARM_MIN, ARM_MAX);
+            }
+            Perspective::ThirdPersonFront => {
+                self.arm_length_front = (self.arm_length_front - scroll_dy * 0.5).clamp(ARM_MIN, ARM_MAX);
+            }
+            Perspective::FirstPerson => {
+                // Scroll up = zoom in = smaller FOV.
+                self.fov = (self.fov - scroll_dy * 2.0).clamp(FOV_MIN, FOV_MAX);
+            }
+        }
+    }
+
+    /// Compute the world-space eye position (base of camera raycast).
+    pub fn eye_pos(player_pos: Vec3, eye_height: f32) -> Vec3 {
+        player_pos + Vec3::Y * eye_height
+    }
+
+    /// Compute the desired (unoccluded) camera position and the ray from eye to it.
+    /// Returns `(eye, desired_pos)`.
+    pub fn desired_follow_pos(&self, player_pos: Vec3, eye_height: f32, capsule_radius: f32) -> (Vec3, Vec3) {
+        let eye = Self::eye_pos(player_pos, eye_height);
+        let desired = match self.perspective {
+            Perspective::ThirdPersonBack => {
                 let back = -self.front();
-                self.position = eye_pos + back * 3.0 + Vec3::Y * 0.5;
+                eye + back * self.arm_length_back + Vec3::Y * 0.5
             }
             Perspective::ThirdPersonFront => {
                 let front = self.front();
-                self.position = eye_pos + front * 5.0 + Vec3::Y * 0.25;
+                eye + front * self.arm_length_front + Vec3::Y * 0.25
             }
             Perspective::FirstPerson => {
-                self.position = eye_pos + self.front() * capsule_radius;
+                eye + self.front() * capsule_radius
+            }
+        };
+        (eye, desired)
+    }
+
+    /// Update the camera position using wall-clip occlusion data.
+    ///
+    /// `eye`        — world-space eye position (origin of the camera ray)
+    /// `desired`    — unclamped desired camera world position
+    /// `hit_dist`   — ray distance to the nearest static geometry hit, if any
+    /// `dt`         — frame delta time for smooth arm recovery
+    pub fn apply_occlusion(&mut self, eye: Vec3, desired: Vec3, hit_dist: Option<f32>, dt: f32) {
+        match self.perspective {
+            Perspective::FirstPerson => {
+                // First-person: no arm-length occlusion; physics prevents the player
+                // from embedding in walls, so the camera follows without clamping.
+                self.position = desired;
+            }
+            Perspective::ThirdPersonBack | Perspective::ThirdPersonFront => {
+                let to_desired = desired - eye;
+                let full_dist = to_desired.length();
+                let ray_dir = if full_dist > 1e-6 { to_desired / full_dist } else { Vec3::NEG_Z };
+
+                let eff = match self.perspective {
+                    Perspective::ThirdPersonBack  => &mut self.effective_arm_back,
+                    Perspective::ThirdPersonFront => &mut self.effective_arm_front,
+                    _ => unreachable!(),
+                };
+
+                // Wall-clamped distance: clear sky = full_dist.
+                let wall_dist = hit_dist
+                    .map(|d| (d - WALL_CLEARANCE).max(MIN_ARM))
+                    .unwrap_or(full_dist);
+
+                if wall_dist < *eff {
+                    // Wall is closer: snap camera in immediately to avoid clipping.
+                    *eff = wall_dist;
+                } else {
+                    // Wall retreated or gone: lerp back toward the desired arm length.
+                    *eff = (*eff + ARM_RECOVERY_SPEED * dt).min(wall_dist);
+                }
+
+                self.position = eye + ray_dir * *eff;
             }
         }
     }

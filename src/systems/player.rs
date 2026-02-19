@@ -267,8 +267,11 @@ pub fn player_movement_system(
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
-        // Always rotate the player mesh to face camera yaw.
-        local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
+        // Rotate the player mesh to face camera yaw, unless free-look is active
+        // (alt-look: camera pans freely, character facing stays fixed).
+        if !camera.free_look {
+            local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
+        }
 
         if fsm.state.is_airborne() {
             // Air control: nudge velocity toward desired direction.
