@@ -18,15 +18,12 @@ use engine::time::FrameTimer;
 use engine::window::GameWindow;
 use glam::{Mat4, Vec3};
 use hecs::World;
-use renderer::{MeshStore, Renderer};
-use scene::prefabs::{
-    spawn_directional_light, spawn_ground, spawn_physics_sphere, spawn_player, spawn_point_light,
-    spawn_spot_light, spawn_static_box,
-};
+use renderer::Renderer;
+use scene::test_scene::load_test_scene;
 use sdl2::keyboard::Scancode;
 use systems::{
-    grab_throw_system, grounded_system, physics_system, player_movement_system,
-    player_state_system, transform_propagation_system,
+    collision_system, grab_throw_system, grounded_system, physics_step, player_movement_system,
+    player_state_system, transform_propagation_system, PHYSICS_DT,
 };
 use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
 
@@ -48,54 +45,8 @@ fn main() {
     let mut pause_menu = PauseMenu::new();
     let mut game_state = GameState::Running;
 
-    let mut meshes = MeshStore::new();
     let mut world = World::new();
-
-    // --- Scene setup ---
-    spawn_ground(&mut world, &mut meshes);
-
-    spawn_physics_sphere(
-        &mut world,
-        &mut meshes,
-        Vec3::new(0.0, 2.0, -3.0),
-        Vec3::new(0.8, 0.2, 0.15),
-        0.5,
-        Vec3::new(0.0, 5.0, 0.0),
-    );
-
-    // Grey boxes scattered around spawn
-    let grey = Vec3::new(0.5, 0.5, 0.52);
-    for &(x, z, h) in &[(6.0_f32, -4.0_f32, 2.0_f32), (-5.0, 3.0, 3.5), (3.0, 7.0, 1.5)] {
-        spawn_static_box(
-            &mut world,
-            &mut meshes,
-            Vec3::new(x, h / 2.0, z),
-            Vec3::new(2.5, h / 2.0, 3.5),
-            grey,
-        );
-    }
-
-    let player_entity = spawn_player(&mut world, &mut meshes, Vec3::new(0.0, 10.0, 0.0));
-
-    spawn_directional_light(
-        &mut world,
-        Vec3::new(-0.5, -1.0, -0.3),
-        Vec3::new(1.0, 0.95, 0.85),
-        1.0,
-    );
-    spawn_point_light(&mut world, Vec3::new(3.0, 3.0, 0.0), Vec3::new(1.0, 0.6, 0.2), 2.0, 15.0);
-    spawn_point_light(&mut world, Vec3::new(-4.0, 2.0, -3.0), Vec3::new(0.2, 0.4, 1.0), 1.5, 12.0);
-    spawn_point_light(&mut world, Vec3::new(0.0, 4.0, -8.0), Vec3::new(0.1, 0.9, 0.3), 1.8, 18.0);
-    spawn_spot_light(
-        &mut world,
-        Vec3::new(5.0, 6.0, 5.0),
-        Vec3::new(0.0, -1.0, 0.0),
-        Vec3::new(1.0, 0.9, 0.7),
-        3.0,
-        15.0,
-        30.0,
-        20.0,
-    );
+    let (meshes, player_entity) = load_test_scene(&mut world);
 
     let mut recorder = if args.record {
         let (w, h) = window.size();
@@ -229,9 +180,16 @@ fn main() {
                     }
                 }
 
-                let (collision_events, frame_alpha, physics_ticks) =
-                    physics_system(&mut world, &mut physics_accum, timer.dt);
-                alpha = frame_alpha;
+                let mut collision_events = Vec::new();
+                let mut physics_ticks = 0usize;
+                physics_accum += timer.dt;
+                while physics_accum >= PHYSICS_DT {
+                    physics_ticks += 1;
+                    physics_step(&mut world);
+                    collision_events.extend(collision_system(&mut world));
+                    physics_accum -= PHYSICS_DT;
+                }
+                alpha = physics_accum / PHYSICS_DT;
                 grounded_system(&mut world, &collision_events, physics_ticks);
 
                 if camera.mode == CameraMode::Player {
@@ -241,7 +199,7 @@ fn main() {
                         world.get::<&LocalTransform>(player_entity),
                         world.get::<&PreviousPosition>(player_entity),
                     ) {
-                        (Ok(local), Ok(prev)) => prev.0.lerp(local.position, frame_alpha),
+                        (Ok(local), Ok(prev)) => prev.0.lerp(local.position, alpha),
                         (Ok(local), _) => local.position,
                         _ => Vec3::ZERO,
                     };
