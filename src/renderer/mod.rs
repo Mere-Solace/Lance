@@ -2,7 +2,7 @@ pub mod mesh;
 pub mod shader;
 
 use gl::types::*;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use hecs::World;
 use mesh::Mesh;
 use shader::ShaderProgram;
@@ -21,6 +21,16 @@ const FOG_COLOR: Vec3 = Vec3::new(0.1, 0.1, 0.15);
 
 const MAX_POINT_LIGHTS: usize = 8;
 const MAX_SPOT_LIGHTS: usize = 4;
+
+/// Number of shadow cascade slices.
+const NUM_CASCADES: usize = 3;
+
+/// Camera-space depth split points (positive, metres).
+/// Cascade i covers [CASCADE_SPLITS[i], CASCADE_SPLITS[i+1]).
+const CASCADE_SPLITS: [f32; 4] = [0.1, 8.0, 25.0, 80.0];
+
+/// How far behind each cascade to extend the light frustum to capture shadow casters.
+const SHADOW_CASTER_REACH: f32 = 150.0;
 
 /// Shadow map framebuffer object.
 struct ShadowMap {
@@ -82,11 +92,7 @@ impl ShadowMap {
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
         }
 
-        Self {
-            fbo,
-            texture,
-            resolution,
-        }
+        Self { fbo, texture, resolution }
     }
 }
 
@@ -123,7 +129,10 @@ impl MeshStore {
 pub struct Renderer {
     shader: ShaderProgram,
     shadow_shader: ShaderProgram,
-    shadow_map: ShadowMap,
+    /// One shadow map per cascade.
+    shadow_maps: Vec<ShadowMap>,
+    /// Cached resolution to detect changes.
+    shadow_resolution: u32,
     viewport_size: (i32, i32),
 }
 
@@ -139,10 +148,9 @@ impl Renderer {
         let shadow_shader = ShaderProgram::from_sources(SHADOW_VERT_SRC, SHADOW_FRAG_SRC)
             .expect("Failed to compile shadow shaders");
 
-        // Default shadow map at 2048 — will be recreated if a DirectionalLight requests different
-        let shadow_map = ShadowMap::new(2048);
+        let shadow_resolution = 2048;
+        let shadow_maps = (0..NUM_CASCADES).map(|_| ShadowMap::new(shadow_resolution)).collect();
 
-        // Query current viewport for restore after shadow pass
         let mut viewport = [0i32; 4];
         unsafe {
             gl::GetIntegerv(gl::VIEWPORT, viewport.as_mut_ptr());
@@ -151,21 +159,111 @@ impl Renderer {
         Self {
             shader,
             shadow_shader,
-            shadow_map,
+            shadow_maps,
+            shadow_resolution,
             viewport_size: (viewport[2], viewport[3]),
         }
     }
 
-    /// Compute a light-space (view * projection) matrix for a directional shadow caster
-    /// centered around the given focus position.
-    fn light_space_matrix(dir: Vec3, extent: f32, focus: Vec3) -> Mat4 {
-        let light_dir = dir.normalize();
-        let light_pos = focus - light_dir * extent;
-        let light_view = Mat4::look_at_rh(light_pos, focus, Vec3::Y);
+    /// Compute a tight light-space VP matrix for cascade slice [near_dist, far_dist].
+    ///
+    /// Unprojects the 8 NDC corners of the cascade slice to world space, finds the minimal
+    /// bounding sphere, and builds an orthographic shadow frustum around it. The sphere-based
+    /// approach is rotation-invariant, preventing shadow shimmer when the camera rotates.
+    fn cascade_matrix(
+        light_dir: Vec3,
+        view: &Mat4,
+        proj: &Mat4,
+        near_dist: f32,
+        far_dist: f32,
+    ) -> Mat4 {
+        // Map camera-space depths to NDC z using the projection matrix.
+        // For GL right-handed perspective: NDC_z = (P22 * z_view + P32) / (-z_view)
+        // where z_view = -dist (negative, in front of camera).
+        let p22 = proj.col(2).z; // -(far+near)/(far-near)
+        let p32 = proj.col(3).z; // -2*far*near/(far-near)
+        let ndc_z = |dist: f32| (p22 * (-dist) + p32) / dist;
+
+        // Unproject the 8 corners of the cascade frustum slice to world space.
+        let inv_vp = (*proj * *view).inverse();
+        let mut corners = [Vec3::ZERO; 8];
+        let nzs = [ndc_z(near_dist), ndc_z(far_dist)];
+        let mut k = 0;
+        for &nz in &nzs {
+            for &nx in &[-1.0f32, 1.0] {
+                for &ny in &[-1.0f32, 1.0] {
+                    let h = inv_vp * Vec4::new(nx, ny, nz, 1.0);
+                    corners[k] = h.truncate() / h.w;
+                    k += 1;
+                }
+            }
+        }
+
+        // Bounding sphere of the 8 corners. Rounding radius up to the nearest whole unit
+        // prevents sub-texel shadow shimmer as the camera translates.
+        let centroid = corners.iter().fold(Vec3::ZERO, |a, &c| a + c) / 8.0;
+        let radius_raw = corners.iter().map(|&c| (c - centroid).length()).fold(0.0f32, f32::max);
+        let radius = (radius_raw + 1.0).ceil();
+
+        // Position the shadow camera behind the scene along the light direction.
+        let ld = light_dir.normalize();
+        let up = if ld.y.abs() < 0.99 { Vec3::Y } else { Vec3::X };
+        let eye = centroid - ld * SHADOW_CASTER_REACH;
+        let light_view = Mat4::look_at_rh(eye, centroid, up);
+
+        // Square orthographic frustum sized to the bounding sphere radius.
         let light_proj = Mat4::orthographic_rh_gl(
-            -extent, extent, -extent, extent, 0.1, extent * 2.5,
+            -radius,
+            radius,
+            -radius,
+            radius,
+            0.1,
+            SHADOW_CASTER_REACH + radius * 2.0,
         );
+
         light_proj * light_view
+    }
+
+    /// Extract the 6 Gribb-Hartmann frustum planes from a combined VP matrix.
+    /// A point P is inside if dot(plane, P) >= 0 (unnormalised).
+    fn frustum_planes(vp: &Mat4) -> [Vec4; 6] {
+        // Extract matrix rows (each row is a dot product over homogeneous coords).
+        let row = |i: usize| Vec4::new(vp.col(0)[i], vp.col(1)[i], vp.col(2)[i], vp.col(3)[i]);
+        let r0 = row(0);
+        let r1 = row(1);
+        let r2 = row(2);
+        let r3 = row(3);
+        [
+            r3 + r0, // left
+            r3 - r0, // right
+            r3 + r1, // bottom
+            r3 - r1, // top
+            r3 + r2, // near
+            r3 - r2, // far
+        ]
+    }
+
+    /// Returns true if a sphere (world-space center + radius) is fully outside any frustum plane.
+    fn sphere_outside_frustum(center: Vec3, radius: f32, planes: &[Vec4; 6]) -> bool {
+        for &p in planes {
+            let dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
+            let len = Vec3::new(p.x, p.y, p.z).length();
+            if dist < -radius * len {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Approximate world-space bounding sphere from a GlobalTransform matrix.
+    /// Position = matrix translation; radius = max column scale × 2 (conservative).
+    fn approx_bounding_sphere(gt: &GlobalTransform) -> (Vec3, f32) {
+        let pos = gt.0.col(3).truncate();
+        let sx = gt.0.col(0).truncate().length();
+        let sy = gt.0.col(1).truncate().length();
+        let sz = gt.0.col(2).truncate().length();
+        let radius = sx.max(sy).max(sz) * 2.0;
+        (pos, radius.max(0.5))
     }
 
     pub fn draw_scene(
@@ -176,7 +274,7 @@ impl Renderer {
         proj: &Mat4,
         camera_pos: Vec3,
     ) {
-        // Update viewport size
+        // Update cached viewport size.
         let mut viewport = [0i32; 4];
         unsafe {
             gl::GetIntegerv(gl::VIEWPORT, viewport.as_mut_ptr());
@@ -187,54 +285,75 @@ impl Renderer {
         let mut dir_light_dir = Vec3::new(-0.5, -1.0, -0.3);
         let mut dir_light_color = Vec3::ONE;
         let mut dir_light_intensity: f32 = 1.0;
-        let mut shadow_extent: f32 = 40.0;
         let mut shadows_enabled = false;
+        let mut shadow_resolution = self.shadow_resolution;
 
         for (_e, (dl,)) in world.query::<(&DirectionalLight,)>().iter() {
             dir_light_dir = dl.direction;
             dir_light_color = dl.color;
             dir_light_intensity = dl.intensity;
-            shadow_extent = dl.shadow_extent;
+            shadow_resolution = dl.shadow_resolution;
             shadows_enabled = true;
-
-            // Recreate shadow map if resolution changed
-            if dl.shadow_resolution != self.shadow_map.resolution {
-                self.shadow_map = ShadowMap::new(dl.shadow_resolution);
-            }
-            break; // Use first directional light only
+            break; // first directional light only
         }
 
-        let light_space = Self::light_space_matrix(dir_light_dir, shadow_extent, camera_pos);
+        // Recreate shadow maps if resolution changed.
+        if shadow_resolution != self.shadow_resolution {
+            self.shadow_maps =
+                (0..NUM_CASCADES).map(|_| ShadowMap::new(shadow_resolution)).collect();
+            self.shadow_resolution = shadow_resolution;
+        }
 
-        // ============ PASS 1: Shadow map ============
+        // Compute per-cascade light-space VP matrices.
+        let mut cascade_matrices = [Mat4::IDENTITY; NUM_CASCADES];
+        if shadows_enabled {
+            for i in 0..NUM_CASCADES {
+                cascade_matrices[i] = Self::cascade_matrix(
+                    dir_light_dir,
+                    view,
+                    proj,
+                    CASCADE_SPLITS[i],
+                    CASCADE_SPLITS[i + 1],
+                );
+            }
+        }
+
+        // ============ PASS 1: Shadow maps (one per cascade) ============
         if shadows_enabled {
             unsafe {
-                gl::Viewport(
-                    0,
-                    0,
-                    self.shadow_map.resolution as i32,
-                    self.shadow_map.resolution as i32,
-                );
-                gl::BindFramebuffer(gl::FRAMEBUFFER, self.shadow_map.fbo);
-                gl::Clear(gl::DEPTH_BUFFER_BIT);
-                // Reduce shadow acne with front-face culling during shadow pass
+                gl::Viewport(0, 0, self.shadow_resolution as i32, self.shadow_resolution as i32);
                 gl::CullFace(gl::FRONT);
                 gl::Enable(gl::CULL_FACE);
             }
 
             self.shadow_shader.bind();
-            self.shadow_shader.set_mat4("u_light_space", &light_space);
 
-            for (_entity, (global_transform, mesh_handle, hidden)) in world
-                .query::<(&GlobalTransform, &MeshHandle, Option<&Hidden>)>()
-                .iter()
-            {
-                if hidden.is_some() {
-                    continue;
+            for c in 0..NUM_CASCADES {
+                unsafe {
+                    gl::BindFramebuffer(gl::FRAMEBUFFER, self.shadow_maps[c].fbo);
+                    gl::Clear(gl::DEPTH_BUFFER_BIT);
                 }
-                self.shadow_shader
-                    .set_mat4("u_model", &global_transform.0);
-                meshes.get(*mesh_handle).draw();
+
+                self.shadow_shader.set_mat4("u_light_space", &cascade_matrices[c]);
+
+                let planes = Self::frustum_planes(&cascade_matrices[c]);
+
+                for (_entity, (gt, mesh_handle, hidden)) in
+                    world.query::<(&GlobalTransform, &MeshHandle, Option<&Hidden>)>().iter()
+                {
+                    if hidden.is_some() {
+                        continue;
+                    }
+
+                    // Frustum cull: skip entities outside this cascade's light frustum.
+                    let (pos, radius) = Self::approx_bounding_sphere(gt);
+                    if Self::sphere_outside_frustum(pos, radius, &planes) {
+                        continue;
+                    }
+
+                    self.shadow_shader.set_mat4("u_model", &gt.0);
+                    meshes.get(*mesh_handle).draw();
+                }
             }
 
             unsafe {
@@ -252,7 +371,6 @@ impl Renderer {
         self.shader.bind();
         self.shader.set_mat4("u_view", view);
         self.shader.set_mat4("u_projection", proj);
-        self.shader.set_mat4("u_light_space", &light_space);
         self.shader.set_vec3("u_camera_pos", camera_pos);
         self.shader.set_vec3("u_ambient_color", Vec3::new(0.15, 0.15, 0.15));
         self.shader.set_vec3("u_fog_color", FOG_COLOR);
@@ -265,12 +383,28 @@ impl Renderer {
         self.shader.set_float("u_dir_light_intensity", dir_light_intensity);
         self.shader.set_int("u_shadows_enabled", if shadows_enabled { 1 } else { 0 });
 
-        // Bind shadow map to texture unit 0
+        // Upload cascade light-space matrices
+        for i in 0..NUM_CASCADES {
+            self.shader
+                .set_mat4(&format!("u_cascade_light_space[{}]", i), &cascade_matrices[i]);
+        }
+
+        // Bind cascade shadow maps to texture units 0–2
         unsafe {
             gl::ActiveTexture(gl::TEXTURE0);
-            gl::BindTexture(gl::TEXTURE_2D, self.shadow_map.texture);
+            gl::BindTexture(gl::TEXTURE_2D, self.shadow_maps[0].texture);
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, self.shadow_maps[1].texture);
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, self.shadow_maps[2].texture);
         }
-        self.shader.set_int("u_shadow_map", 0);
+        self.shader.set_int("u_shadow_map_0", 0);
+        self.shader.set_int("u_shadow_map_1", 1);
+        self.shader.set_int("u_shadow_map_2", 2);
+
+        // Cascade split thresholds (camera depth at cascade boundaries)
+        self.shader.set_float("u_cascade_splits[0]", CASCADE_SPLITS[1]);
+        self.shader.set_float("u_cascade_splits[1]", CASCADE_SPLITS[2]);
 
         // --- Upload point lights ---
         let mut point_count = 0usize;
@@ -278,30 +412,17 @@ impl Renderer {
             if point_count >= MAX_POINT_LIGHTS {
                 break;
             }
-            self.shader.set_vec3(
-                &format!("u_point_light_pos[{}]", point_count),
-                lt.position,
-            );
-            self.shader.set_vec3(
-                &format!("u_point_light_color[{}]", point_count),
-                pl.color,
-            );
-            self.shader.set_float(
-                &format!("u_point_light_intensity[{}]", point_count),
-                pl.intensity,
-            );
-            self.shader.set_float(
-                &format!("u_point_light_constant[{}]", point_count),
-                pl.constant,
-            );
-            self.shader.set_float(
-                &format!("u_point_light_linear[{}]", point_count),
-                pl.linear,
-            );
-            self.shader.set_float(
-                &format!("u_point_light_quadratic[{}]", point_count),
-                pl.quadratic,
-            );
+            self.shader.set_vec3(&format!("u_point_light_pos[{}]", point_count), lt.position);
+            self.shader
+                .set_vec3(&format!("u_point_light_color[{}]", point_count), pl.color);
+            self.shader
+                .set_float(&format!("u_point_light_intensity[{}]", point_count), pl.intensity);
+            self.shader
+                .set_float(&format!("u_point_light_constant[{}]", point_count), pl.constant);
+            self.shader
+                .set_float(&format!("u_point_light_linear[{}]", point_count), pl.linear);
+            self.shader
+                .set_float(&format!("u_point_light_quadratic[{}]", point_count), pl.quadratic);
             point_count += 1;
         }
         self.shader.set_int("u_num_point_lights", point_count as i32);
@@ -312,22 +433,13 @@ impl Renderer {
             if spot_count >= MAX_SPOT_LIGHTS {
                 break;
             }
-            self.shader.set_vec3(
-                &format!("u_spot_light_pos[{}]", spot_count),
-                lt.position,
-            );
-            self.shader.set_vec3(
-                &format!("u_spot_light_dir[{}]", spot_count),
-                sl.direction,
-            );
-            self.shader.set_vec3(
-                &format!("u_spot_light_color[{}]", spot_count),
-                sl.color,
-            );
-            self.shader.set_float(
-                &format!("u_spot_light_intensity[{}]", spot_count),
-                sl.intensity,
-            );
+            self.shader.set_vec3(&format!("u_spot_light_pos[{}]", spot_count), lt.position);
+            self.shader
+                .set_vec3(&format!("u_spot_light_dir[{}]", spot_count), sl.direction);
+            self.shader
+                .set_vec3(&format!("u_spot_light_color[{}]", spot_count), sl.color);
+            self.shader
+                .set_float(&format!("u_spot_light_intensity[{}]", spot_count), sl.intensity);
             self.shader.set_float(
                 &format!("u_spot_light_inner_cone[{}]", spot_count),
                 sl.inner_cone,
@@ -336,14 +448,10 @@ impl Renderer {
                 &format!("u_spot_light_outer_cone[{}]", spot_count),
                 sl.outer_cone,
             );
-            self.shader.set_float(
-                &format!("u_spot_light_constant[{}]", spot_count),
-                sl.constant,
-            );
-            self.shader.set_float(
-                &format!("u_spot_light_linear[{}]", spot_count),
-                sl.linear,
-            );
+            self.shader
+                .set_float(&format!("u_spot_light_constant[{}]", spot_count), sl.constant);
+            self.shader
+                .set_float(&format!("u_spot_light_linear[{}]", spot_count), sl.linear);
             self.shader.set_float(
                 &format!("u_spot_light_quadratic[{}]", spot_count),
                 sl.quadratic,
@@ -353,7 +461,7 @@ impl Renderer {
         self.shader.set_int("u_num_spot_lights", spot_count as i32);
 
         // --- Draw entities ---
-        for (_entity, (global_transform, mesh_handle, color, checker, hidden)) in world
+        for (_entity, (gt, mesh_handle, color, checker, hidden)) in world
             .query::<(
                 &GlobalTransform,
                 &MeshHandle,
@@ -366,7 +474,7 @@ impl Renderer {
             if hidden.is_some() {
                 continue;
             }
-            self.shader.set_mat4("u_model", &global_transform.0);
+            self.shader.set_mat4("u_model", &gt.0);
             self.shader.set_vec3("u_object_color", color.0);
             if let Some(checker) = checker {
                 self.shader.set_int("u_checkerboard", 1);
