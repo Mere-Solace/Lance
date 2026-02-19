@@ -402,7 +402,6 @@ pub fn spawn_directional_light(
         color,
         intensity,
         shadow_resolution: 2048,
-        shadow_extent: 40.0,
     },))
 }
 

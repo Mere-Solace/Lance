@@ -1,14 +1,12 @@
 use glam::Vec3;
 
-/// Directional light component (sun-like). Casts shadows via shadow mapping.
+/// Directional light component (sun-like). Casts shadows via cascaded shadow mapping.
 pub struct DirectionalLight {
     pub direction: Vec3,
     pub color: Vec3,
     pub intensity: f32,
-    /// Shadow map resolution (width = height).
+    /// Per-cascade shadow map resolution (width = height). Default 2048.
     pub shadow_resolution: u32,
-    /// Half-extent of the orthographic shadow volume.
-    pub shadow_extent: f32,
 }
 
 /// Point light component with distance attenuation.
