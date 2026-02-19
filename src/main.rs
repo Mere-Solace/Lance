@@ -1,6 +1,7 @@
 mod camera;
 mod components;
 mod engine;
+mod fsm;
 mod recording;
 mod renderer;
 mod scene;
@@ -25,7 +26,7 @@ use scene::prefabs::{
 use sdl2::keyboard::Scancode;
 use systems::{
     grab_throw_system, grounded_system, physics_system, player_movement_system,
-    transform_propagation_system,
+    player_state_system, transform_propagation_system,
 };
 use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
 
@@ -220,6 +221,7 @@ fn main() {
 
                 match camera.mode {
                     CameraMode::Player => {
+                        player_state_system(&mut world, &input, timer.dt);
                         player_movement_system(&mut world, &input, &camera, speed_mult);
                     }
                     CameraMode::Fly => {

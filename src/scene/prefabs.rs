@@ -315,8 +315,12 @@ pub fn spawn_static_box(
     half_extents: Vec3,
     color: Vec3,
 ) -> Entity {
-    let (w, h, d) = (half_extents.x * 2.0, half_extents.y * 2.0, half_extents.z * 2.0);
-    let box_handle = meshes.add(create_tapered_box(w / 2.0, d / 2.0, w / 2.0, d / 2.0, h));
+    // create_tapered_box takes full dimensions; half_extents * 2 = full size
+    let box_handle = meshes.add(create_tapered_box(
+        half_extents.x * 2.0, half_extents.z * 2.0,
+        half_extents.x * 2.0, half_extents.z * 2.0,
+        half_extents.y * 2.0,
+    ));
     world.spawn((
         LocalTransform::new(pos),
         GlobalTransform(Mat4::IDENTITY),
@@ -364,8 +368,10 @@ pub fn spawn_player(world: &mut World, meshes: &mut MeshStore, pos: Vec3) -> Ent
         Restitution(0.0),
         Friction(0.8),
         Player,
-        Grounded,
         GrabState::new(),
+        // Player spawns airborne (pos.y = 10); starts in Falling so the FSM
+        // is correct immediately without a dummy Grounded → Falling transition.
+        PlayerFsm::new(PlayerState::Falling),
     ));
 
     let body = spawn_character(
