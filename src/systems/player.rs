@@ -271,8 +271,17 @@ fn find_root(world: &World, entity: hecs::Entity) -> hecs::Entity {
     current
 }
 
-pub fn grounded_system(world: &mut World, events: &[CollisionEvent]) {
-    // Remove Grounded from all player entities each frame.
+/// `physics_ticks` is the number of fixed steps that ran this render frame.
+/// When it is zero (render framerate > physics rate), no collision events were
+/// generated, so we must NOT clear Grounded — contacts from last tick are still
+/// valid. Clearing it would trigger a spurious Falling transition every other
+/// frame on hardware faster than 60fps.
+pub fn grounded_system(world: &mut World, events: &[CollisionEvent], physics_ticks: usize) {
+    if physics_ticks == 0 {
+        return;
+    }
+
+    // A physics tick ran — clear and rebuild from this tick's contacts.
     let players: Vec<_> = world
         .query_mut::<(&Player, &Grounded)>()
         .into_iter()

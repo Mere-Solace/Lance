@@ -229,10 +229,10 @@ fn main() {
                     }
                 }
 
-                let (collision_events, frame_alpha) =
+                let (collision_events, frame_alpha, physics_ticks) =
                     physics_system(&mut world, &mut physics_accum, timer.dt);
                 alpha = frame_alpha;
-                grounded_system(&mut world, &collision_events);
+                grounded_system(&mut world, &collision_events, physics_ticks);
 
                 if camera.mode == CameraMode::Player {
                     // Use interpolated player position so the camera follows
