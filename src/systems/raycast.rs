@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hecs::{Entity, World};
 
-use crate::components::{Collider, GlobalTransform, Grabbable};
+use crate::components::{Collider, GlobalTransform, Grabbable, Static};
 
 #[allow(dead_code)]
 pub struct RaycastHit {
@@ -45,6 +45,47 @@ pub fn raycast_grabbable(
                         distance: t,
                         point: origin + dir * t,
                     });
+                }
+            }
+        }
+    }
+
+    best
+}
+
+/// Cast a ray against all Static geometry, returning the nearest hit distance within max_distance.
+/// Used for camera wall-clip occlusion queries.
+pub fn raycast_static(
+    world: &World,
+    origin: Vec3,
+    direction: Vec3,
+    max_distance: f32,
+) -> Option<f32> {
+    let dir = direction.normalize();
+    let mut best: Option<f32> = None;
+
+    for (_, (_, collider, global)) in
+        world.query::<(&Static, &Collider, &GlobalTransform)>().iter()
+    {
+        let center = Vec3::new(global.0.w_axis.x, global.0.w_axis.y, global.0.w_axis.z);
+
+        let t = match collider {
+            Collider::Sphere { radius } => ray_sphere_intersection(origin, dir, center, *radius),
+            Collider::Capsule { radius, height } => {
+                ray_capsule_intersection(origin, dir, center, *radius, *height)
+            }
+            Collider::Box { half_extents } => {
+                ray_aabb_intersection(origin, dir, center, *half_extents)
+            }
+            // Plane colliders are infinite floors — skip them for camera occlusion.
+            Collider::Plane { .. } => None,
+        };
+
+        if let Some(t) = t {
+            if t > 0.0 && t <= max_distance {
+                let is_closer = best.map_or(true, |b| t < b);
+                if is_closer {
+                    best = Some(t);
                 }
             }
         }
