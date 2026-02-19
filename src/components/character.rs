@@ -1,0 +1,73 @@
+use glam::{Quat, Vec3};
+use hecs::Entity;
+
+/// Marker: this entity is the player.
+pub struct Player;
+
+/// Marker: entities with the same owner Entity skip collision with each other.
+/// Attach to all body parts of a character (torso, head, limbs) with the root entity as owner.
+#[derive(Clone, Copy)]
+pub struct NoSelfCollision(pub Entity);
+
+/// Marker: entity can be grabbed by the player.
+pub struct Grabbable;
+
+/// Marker: entity is currently held (skip physics/collision).
+pub struct Held;
+
+/// State for the grab/throw system, attached to the player entity.
+pub struct GrabState {
+    pub held_entity: Option<Entity>,
+    pub wind_up_time: f32,
+    pub is_winding: bool,
+    /// Player-local rotation of the held entity (rotates with player via parenting).
+    pub held_rotation: Quat,
+    /// Previous frame's world position of the held entity (for velocity tracking).
+    pub prev_world_pos: Vec3,
+    /// Smoothed world-space velocity of the held entity.
+    pub held_velocity: Vec3,
+}
+
+impl GrabState {
+    pub fn new() -> Self {
+        Self {
+            held_entity: None,
+            wind_up_time: 0.0,
+            is_winding: false,
+            held_rotation: Quat::IDENTITY,
+            prev_world_pos: Vec3::ZERO,
+            held_velocity: Vec3::ZERO,
+        }
+    }
+}
+
+/// Whether the sword is sheathed at the hip or wielded in hand.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SwordPosition {
+    Sheathed,
+    Wielded,
+}
+
+/// State for the sword entity, attached to the sword child of the player.
+pub struct SwordState {
+    pub position: SwordPosition,
+    pub sheathed_pos: Vec3,
+    pub sheathed_rot: Quat,
+    pub wielded_pos: Vec3,
+    pub wielded_rot: Quat,
+}
+
+/// Tracks the limb entities that make up the player's character body.
+/// Attached to the player entity for direct access to limbs.
+pub struct CharacterBody {
+    pub head: Entity,
+    pub left_upper_arm: Entity,
+    pub left_forearm: Entity,
+    pub right_upper_arm: Entity,
+    pub right_forearm: Entity,
+    pub left_upper_leg: Entity,
+    pub left_lower_leg: Entity,
+    pub right_upper_leg: Entity,
+    pub right_lower_leg: Entity,
+    pub sword: Entity,
+}
