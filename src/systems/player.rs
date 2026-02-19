@@ -267,15 +267,22 @@ pub fn player_movement_system(
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
-        // Rotate the player mesh to face camera yaw, unless free-look is active.
-        // During the return lerp, re-engage body rotation after a short grace period so
-        // movement direction and facing track the returning camera instead of lagging behind.
-        const FREE_LOOK_RETURN_GRACE: f32 = 0.1;
-        let body_follows_camera = !camera.free_look
-            && (!camera.free_look_return || camera.free_look_return_elapsed >= FREE_LOOK_RETURN_GRACE);
-        if body_follows_camera {
+        // Rotate the player mesh to face the appropriate yaw:
+        //   Normal play        → camera.yaw (body and camera are in sync).
+        //   Free-look held     → no update (body stays fixed, camera pans freely).
+        //   Return grace (0-0.1s) → no update (brief freeze before convergence starts).
+        //   Return phase 2     → camera.body_yaw, which is independently converging
+        //                        toward camera.yaw while camera.yaw converges toward it.
+        const CONVERGENCE_GRACE: f32 = 0.1;
+        if !camera.free_look && !camera.free_look_return {
+            // Normal: body tracks camera directly.
             local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
+        } else if camera.free_look_return && camera.free_look_return_elapsed >= CONVERGENCE_GRACE {
+            // Convergence phase: body has its own yaw that moves toward the camera.
+            let body_rad = camera.body_yaw.to_radians();
+            local.rotation = Quat::from_rotation_y(-body_rad + std::f32::consts::FRAC_PI_2);
         }
+        // else: free-look held or grace period — body rotation unchanged.
 
         if fsm.state.is_airborne() {
             // Air control: nudge velocity toward desired direction.

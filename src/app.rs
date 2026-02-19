@@ -199,9 +199,9 @@ impl GameApp {
             self.camera.look(input.mouse_dx, input.mouse_dy);
         }
 
-        // Track the character-facing yaw every frame we are NOT in free-look or returning.
+        // Keep body_yaw in sync with camera.yaw every frame we are NOT in free-look or returning.
         if !self.camera.free_look && !self.camera.free_look_return {
-            self.camera.character_yaw = self.camera.yaw;
+            self.camera.body_yaw = self.camera.yaw;
         }
     }
 
