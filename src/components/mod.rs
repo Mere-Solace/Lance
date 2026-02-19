@@ -75,6 +75,7 @@ pub enum Collider {
     Sphere { radius: f32 },
     Capsule { radius: f32, height: f32 },
     Plane { normal: Vec3, offset: f32 },
+    Box { half_extents: Vec3 },
 }
 
 /// Marker: entity is immovable (infinite mass for collision response).
@@ -117,6 +118,16 @@ pub struct Checkerboard(pub Vec3);
 
 /// Marker: entity is hidden from rendering but still participates in physics/collision.
 pub struct Hidden;
+
+/// Previous physics-step position, stored for render interpolation.
+/// Updated at the start of each physics step; used by transform propagation
+/// to lerp between prev and current position by the accumulator alpha.
+pub struct PreviousPosition(pub Vec3);
+
+/// Marker: entities with the same owner Entity skip collision with each other.
+/// Attach to all body parts of a character (torso, head, limbs) with the root entity as owner.
+#[derive(Clone, Copy)]
+pub struct NoSelfCollision(pub Entity);
 
 /// Marker: entity can be grabbed by the player.
 pub struct Grabbable;
@@ -164,6 +175,21 @@ pub struct SwordState {
     pub sheathed_rot: Quat,
     pub wielded_pos: Vec3,
     pub wielded_rot: Quat,
+}
+
+/// Tracks the limb entities that make up the player's character body.
+/// Attached to the player entity for direct access to limbs.
+pub struct CharacterBody {
+    pub head: Entity,
+    pub left_upper_arm: Entity,
+    pub left_forearm: Entity,
+    pub right_upper_arm: Entity,
+    pub right_forearm: Entity,
+    pub left_upper_leg: Entity,
+    pub left_lower_leg: Entity,
+    pub right_upper_leg: Entity,
+    pub right_lower_leg: Entity,
+    pub sword: Entity,
 }
 
 /// Directional light component (sun-like). Casts shadows via shadow mapping.
