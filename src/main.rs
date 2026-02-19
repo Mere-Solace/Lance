@@ -264,13 +264,23 @@ fn main() {
             let (w, h) = window.size();
             let ui_proj = Mat4::orthographic_rh_gl(0.0, w as f32, h as f32, 0.0, -1.0, 1.0);
 
+            // In Player mode show the player body position, not the orbiting camera.
+            let hud_pos = if camera.mode == CameraMode::Player {
+                world
+                    .get::<&LocalTransform>(player_entity)
+                    .map(|t| t.position)
+                    .unwrap_or(camera.position)
+            } else {
+                camera.position
+            };
+
             unsafe {
                 gl::Disable(gl::DEPTH_TEST);
                 gl::Enable(gl::BLEND);
                 gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
             }
 
-            debug_hud.draw(&mut text_renderer, &camera, &ui_proj);
+            debug_hud.draw(&mut text_renderer, hud_pos, &camera, &ui_proj);
 
             unsafe {
                 gl::Disable(gl::BLEND);
