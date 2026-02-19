@@ -25,8 +25,8 @@ use scene::prefabs::{
 };
 use sdl2::keyboard::Scancode;
 use systems::{
-    grab_throw_system, grounded_system, physics_system, player_movement_system,
-    player_state_system, transform_propagation_system,
+    collision_system, grab_throw_system, grounded_system, physics_step, player_movement_system,
+    player_state_system, transform_propagation_system, PHYSICS_DT,
 };
 use ui::{GameState, PauseAction, PauseMenu, TextRenderer};
 
@@ -229,9 +229,16 @@ fn main() {
                     }
                 }
 
-                let (collision_events, frame_alpha, physics_ticks) =
-                    physics_system(&mut world, &mut physics_accum, timer.dt);
-                alpha = frame_alpha;
+                let mut collision_events = Vec::new();
+                let mut physics_ticks = 0usize;
+                physics_accum += timer.dt;
+                while physics_accum >= PHYSICS_DT {
+                    physics_ticks += 1;
+                    physics_step(&mut world);
+                    collision_events.extend(collision_system(&mut world));
+                    physics_accum -= PHYSICS_DT;
+                }
+                alpha = physics_accum / PHYSICS_DT;
                 grounded_system(&mut world, &collision_events, physics_ticks);
 
                 if camera.mode == CameraMode::Player {
@@ -241,7 +248,7 @@ fn main() {
                         world.get::<&LocalTransform>(player_entity),
                         world.get::<&PreviousPosition>(player_entity),
                     ) {
-                        (Ok(local), Ok(prev)) => prev.0.lerp(local.position, frame_alpha),
+                        (Ok(local), Ok(prev)) => prev.0.lerp(local.position, alpha),
                         (Ok(local), _) => local.position,
                         _ => Vec3::ZERO,
                     };
