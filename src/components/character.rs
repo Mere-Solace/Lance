@@ -3,6 +3,47 @@ use hecs::Entity;
 
 use crate::fsm::StateMachine;
 
+// ---------------------------------------------------------------------------
+// Animation components
+// ---------------------------------------------------------------------------
+
+/// A snapshot of all bone orientations used for crossfade blending.
+#[derive(Clone, Copy)]
+pub struct BonePose {
+    pub head_rot: Quat,
+    pub left_upper_arm_rot: Quat,
+    pub left_forearm_rot: Quat,
+    pub right_upper_arm_rot: Quat,
+    pub right_forearm_rot: Quat,
+    pub left_upper_leg_rot: Quat,
+    pub left_lower_leg_rot: Quat,
+    pub right_upper_leg_rot: Quat,
+    pub right_lower_leg_rot: Quat,
+}
+
+/// Attached to the player entity. Drives procedural animation of character bones.
+pub struct AnimationState {
+    /// Phase accumulator for cyclic animations (walk/run). Resets on state change.
+    pub phase: f32,
+    /// Blend factor: 0.0 = blend_from pose, 1.0 = current target pose.
+    pub blend: f32,
+    /// Speed at which blend approaches 1.0 (per second).
+    pub blend_speed: f32,
+    /// Snapshot of bone rotations at the start of the last state transition.
+    pub blend_from: Option<BonePose>,
+}
+
+impl AnimationState {
+    pub fn new() -> Self {
+        Self {
+            phase: 0.0,
+            blend: 1.0,
+            blend_speed: 8.0,
+            blend_from: None,
+        }
+    }
+}
+
 /// Marker: this entity is the player.
 pub struct Player;
 

@@ -1,3 +1,4 @@
+mod animation;
 mod collision;
 mod grab;
 mod physics;
@@ -5,6 +6,7 @@ mod player;
 mod raycast;
 mod transform;
 
+pub use animation::animation_system;
 pub use grab::grab_throw_system;
 pub use collision::collision_system;
 pub use physics::{physics_step, PHYSICS_DT};
