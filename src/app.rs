@@ -176,17 +176,11 @@ impl GameApp {
         }
 
         // Free-look (hold C): camera pans without rotating the character.
-        // On release, start a smooth camera return to the character-facing yaw.
+        // On release, snap camera yaw back to the body's facing direction.
         let was_free_look = self.camera.free_look;
-        let new_free_look = input.is_key_held(Scancode::C);
-        self.camera.free_look = new_free_look;
-        if new_free_look {
-            // Re-entering or staying in free-look: cancel any active return lerp.
-            self.camera.free_look_return = false;
-        } else if was_free_look {
-            // C was just released: lerp the camera back to the character-facing yaw.
-            self.camera.free_look_return = true;
-            self.camera.free_look_return_elapsed = 0.0;
+        self.camera.free_look = input.is_key_held(Scancode::C);
+        if was_free_look && !self.camera.free_look {
+            self.camera.yaw = self.camera.body_yaw;
         }
 
         // Scroll wheel zoom.
@@ -194,13 +188,10 @@ impl GameApp {
             self.camera.apply_zoom(input.scroll_dy);
         }
 
-        // Suppress mouse look while the camera is lerping back so it doesn't fight the return.
-        if !self.camera.free_look_return {
-            self.camera.look(input.mouse_dx, input.mouse_dy);
-        }
+        self.camera.look(input.mouse_dx, input.mouse_dy);
 
-        // Keep body_yaw in sync with camera.yaw every frame we are NOT in free-look or returning.
-        if !self.camera.free_look && !self.camera.free_look_return {
+        // Keep body_yaw in sync with camera.yaw every frame we are NOT in free-look.
+        if !self.camera.free_look {
             self.camera.body_yaw = self.camera.yaw;
         }
     }
@@ -211,13 +202,6 @@ impl GameApp {
 
     fn update_systems(&mut self, input: &InputState, dt: f32) -> f32 {
         self.handle_running_input(input);
-
-        // Advance the free-look return lerp when active.
-        if self.camera.free_look_return {
-            if self.camera.tick_free_look_return(dt) {
-                self.camera.free_look_return = false;
-            }
-        }
 
         // Grab/throw must run before player movement to produce speed multiplier
         let speed_mult = if self.camera.mode == CameraMode::Player {

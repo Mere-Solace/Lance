@@ -251,8 +251,11 @@ pub fn player_movement_system(
     speed_multiplier: f32,
     dt: f32,
 ) {
-    let yaw_rad = camera.yaw.to_radians();
-    let forward = Vec3::new(yaw_rad.cos(), 0.0, yaw_rad.sin()).normalize();
+    // Movement direction is always relative to the player body, not the camera.
+    // During free-look the body stays fixed, so WASD stays consistent with where
+    // the character is facing regardless of where the camera has panned to.
+    let body_yaw_rad = camera.body_yaw.to_radians();
+    let forward = Vec3::new(body_yaw_rad.cos(), 0.0, body_yaw_rad.sin()).normalize();
     let right = forward.cross(Vec3::Y).normalize();
 
     // Build input direction once outside the loop.
@@ -267,22 +270,11 @@ pub fn player_movement_system(
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
-        // Rotate the player mesh to face the appropriate yaw:
-        //   Normal play        → camera.yaw (body and camera are in sync).
-        //   Free-look held     → no update (body stays fixed, camera pans freely).
-        //   Return grace (0-0.1s) → no update (brief freeze before convergence starts).
-        //   Return phase 2     → camera.body_yaw, which is independently converging
-        //                        toward camera.yaw while camera.yaw converges toward it.
-        const CONVERGENCE_GRACE: f32 = 0.1;
-        if !camera.free_look && !camera.free_look_return {
-            // Normal: body tracks camera directly.
-            local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
-        } else if camera.free_look_return && camera.free_look_return_elapsed >= CONVERGENCE_GRACE {
-            // Convergence phase: body has its own yaw that moves toward the camera.
-            let body_rad = camera.body_yaw.to_radians();
-            local.rotation = Quat::from_rotation_y(-body_rad + std::f32::consts::FRAC_PI_2);
+        // Body always faces body_yaw. During free-look this stays frozen;
+        // after release camera snaps to body_yaw so everything re-syncs.
+        if !camera.free_look {
+            local.rotation = Quat::from_rotation_y(-body_yaw_rad + std::f32::consts::FRAC_PI_2);
         }
-        // else: free-look held or grace period — body rotation unchanged.
 
         if fsm.state.is_airborne() {
             // Air control: nudge velocity toward desired direction.

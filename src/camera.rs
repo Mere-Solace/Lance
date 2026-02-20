@@ -48,16 +48,10 @@ pub struct Camera {
     pub perspective: Perspective,
     /// Whether the player is holding free-look (C): camera pans without rotating the character.
     pub free_look: bool,
-    /// True while the camera is interpolating back toward `body_yaw` after free-look release.
-    pub free_look_return: bool,
-    /// Seconds elapsed since the current free-look return started.
-    pub free_look_return_elapsed: f32,
     /// The yaw the player body is facing.
-    /// - Normal play: tracks `camera.yaw` every frame (they stay in sync).
+    /// - Normal play: kept in sync with `camera.yaw` every frame.
     /// - Free-look hold: frozen at the facing from before free-look started.
-    /// - Return phase 1 (0..GRACE): frozen; camera lerps toward this value.
-    /// - Return phase 2 (GRACE..end): independently lerps toward `camera.yaw`
-    ///   while `camera.yaw` simultaneously lerps toward it — they converge at the midpoint.
+    /// On release, `camera.yaw` snaps to this value.
     pub body_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
     pub arm_length_back: f32,
@@ -81,8 +75,6 @@ impl Camera {
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
-            free_look_return: false,
-            free_look_return_elapsed: 0.0,
             body_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
@@ -196,57 +188,6 @@ impl Camera {
                 }
 
                 self.position = eye + ray_dir * *eff;
-            }
-        }
-    }
-
-    /// Drive the free-look return in two phases. Returns `true` when complete.
-    ///
-    /// **Phase 1** (first `CONVERGENCE_GRACE` seconds): only the camera moves,
-    /// easing toward `body_yaw` at proportional speed. Gives the player a brief
-    /// moment before input re-engages.
-    ///
-    /// **Phase 2** (after the grace period): camera and body yaw chase each other
-    /// simultaneously — camera toward `body_yaw`, body toward `camera.yaw` — so
-    /// they converge at the midpoint between their phase-2 starting positions.
-    pub fn tick_free_look_return(&mut self, dt: f32) -> bool {
-        const SPEED_FACTOR: f32 = 3.5; // °/s per degree of remaining gap
-        const MIN_SPEED: f32 = 60.0;   // floor so it doesn't crawl near the end
-        const CONVERGENCE_GRACE: f32 = 0.1;
-
-        self.free_look_return_elapsed += dt;
-
-        // Normalise an angle difference to the shortest path in [-180, 180].
-        let shortest = |d: f32| d - 360.0 * (d / 360.0).round();
-
-        if self.free_look_return_elapsed < CONVERGENCE_GRACE {
-            // --- Phase 1: camera-only ease toward body_yaw ---
-            let diff = shortest(self.body_yaw - self.yaw);
-            let step = (diff.abs() * SPEED_FACTOR).max(MIN_SPEED) * dt;
-            if diff.abs() <= step {
-                self.yaw = self.body_yaw;
-                // Don't signal completion yet — wait for phase 2.
-            } else {
-                self.yaw += diff.signum() * step;
-            }
-            false
-        } else {
-            // --- Phase 2: mutual convergence to the midpoint ---
-            // Camera chases body_yaw; body_yaw chases camera.yaw.
-            // Each moves half the proportional step so the midpoint stays fixed.
-            let diff = shortest(self.body_yaw - self.yaw);
-            let step = (diff.abs() * SPEED_FACTOR).max(MIN_SPEED) * dt;
-
-            if diff.abs() <= step {
-                let mid = self.yaw + diff * 0.5;
-                self.yaw = mid;
-                self.body_yaw = mid;
-                true
-            } else {
-                let half = diff.signum() * step * 0.5;
-                self.yaw += half;        // camera moves toward body
-                self.body_yaw -= half;   // body moves toward camera
-                false
             }
         }
     }
