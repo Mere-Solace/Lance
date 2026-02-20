@@ -271,7 +271,7 @@ pub fn player_movement_system(
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
         // Body always faces body_yaw. During free-look this stays frozen;
-        // after release camera snaps to body_yaw so everything re-syncs.
+        // otherwise body_yaw lerps toward camera.yaw each frame (~200 ms).
         if !camera.free_look {
             local.rotation = Quat::from_rotation_y(-body_yaw_rad + std::f32::consts::FRAC_PI_2);
         }

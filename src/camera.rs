@@ -48,12 +48,10 @@ pub struct Camera {
     pub perspective: Perspective,
     /// Whether the player is holding free-look (C): camera pans without rotating the character.
     pub free_look: bool,
-    /// True while the player body is lerping back toward `camera.yaw` after free-look release.
-    pub free_look_return: bool,
     /// The yaw the player body is currently facing.
-    /// - Normal play / return complete: kept in sync with `camera.yaw` every frame.
-    /// - Free-look hold: frozen at the facing from before free-look started.
-    /// - Return active: lerps toward `camera.yaw` independently.
+    /// Always lerps toward `camera.yaw` when `!free_look` — covers both normal
+    /// turning and the return from free-look with a single continuous lerp.
+    /// Frozen while `free_look` is held.
     pub body_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
     pub arm_length_back: f32,
@@ -77,7 +75,6 @@ impl Camera {
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
-            free_look_return: false,
             body_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
@@ -195,14 +192,15 @@ impl Camera {
         }
     }
 
-    /// Lerp `body_yaw` toward the current `camera.yaw`. Returns `true` when complete.
+    /// Lerp `body_yaw` toward `camera.yaw`. Call every frame when `!free_look`.
     ///
-    /// Speed is proportional to the remaining angle (4 °/s per degree), so the
-    /// body closes the gap in roughly 250 ms regardless of how far it has to travel.
-    /// A 90 °/s floor prevents crawling on the final few degrees.
-    pub fn tick_free_look_return(&mut self, dt: f32) -> bool {
-        const SPEED_FACTOR: f32 = 4.0;
-        const MIN_SPEED: f32 = 90.0;
+    /// Covers both normal turning and the return from free-look — one continuous lerp.
+    /// Speed is proportional to the remaining angle (5 °/s per degree), giving
+    /// roughly 200 ms convergence at any angular distance. A 120 °/s floor keeps
+    /// the tail-end from dragging.
+    pub fn tick_body_yaw(&mut self, dt: f32) {
+        const SPEED_FACTOR: f32 = 5.0;
+        const MIN_SPEED: f32 = 120.0;
 
         let diff = {
             let d = self.yaw - self.body_yaw;
@@ -212,10 +210,8 @@ impl Camera {
 
         if diff.abs() <= step {
             self.body_yaw = self.yaw;
-            true
         } else {
             self.body_yaw += diff.signum() * step;
-            false
         }
     }
 
