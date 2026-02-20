@@ -412,6 +412,202 @@ fn test_pair(a: &ColliderEntry, b: &ColliderEntry) -> Option<CollisionEvent> {
     }
 }
 
+fn collider_to_kind(collider: &Collider) -> ColliderKind {
+    match collider {
+        Collider::Sphere { radius } => ColliderKind::Sphere { radius: *radius },
+        Collider::Capsule { radius, height } => ColliderKind::Capsule {
+            radius: *radius,
+            half_height: height * 0.5,
+        },
+        Collider::Plane { normal, offset } => ColliderKind::Plane {
+            normal: *normal,
+            offset: *offset,
+        },
+        Collider::Box { half_extents } => ColliderKind::Box {
+            half_extents: *half_extents,
+        },
+    }
+}
+
+/// Query overlapping colliders for a hypothetical collider placed at `world_pos`.
+/// Returns `(push_normal, depth, other_entity, is_dynamic)` for each overlap found.
+/// `push_normal` is the direction to move the test collider to resolve the overlap.
+/// Skips entities in `skip_entities` and all `Held` entities.
+pub fn query_collisions_at(
+    world: &World,
+    test_collider: &Collider,
+    world_pos: Vec3,
+    skip_entities: &[Entity],
+) -> Vec<(Vec3, f32, Entity, bool)> {
+    let test_entry = ColliderEntry {
+        entity: Entity::DANGLING,
+        position: world_pos,
+        collider_kind: collider_to_kind(test_collider),
+        body_owner: None,
+    };
+
+    // Phase 1: collect overlaps (immutable query; borrow released after collect)
+    let raw: Vec<(Vec3, f32, Entity)> = world
+        .query::<(&GlobalTransform, &Collider, Option<&Held>)>()
+        .iter()
+        .filter_map(|(entity, (global, collider, held))| {
+            if held.is_some() || skip_entities.contains(&entity) {
+                return None;
+            }
+            let other_entry = ColliderEntry {
+                entity,
+                position: global.0.w_axis.truncate(),
+                collider_kind: collider_to_kind(collider),
+                body_owner: None,
+            };
+            let event = test_pair(&test_entry, &other_entry)?;
+            // Determine push direction for test collider.
+            // test_pair may canonicalize some pairs (e.g. Plane vs Sphere) by swapping entity_a/b.
+            // When entity_a == DANGLING the test collider is A; normal points A→B so push is -normal.
+            // When entity_b == DANGLING the test collider is B; normal points A→B so push is +normal.
+            let push = if event.entity_a == Entity::DANGLING {
+                -event.contact_normal
+            } else {
+                event.contact_normal
+            };
+            Some((push, event.penetration_depth, entity))
+        })
+        .collect();
+
+    // Phase 2: tag is_dynamic (separate borrow after query is dropped)
+    raw.into_iter()
+        .map(|(push, depth, entity)| {
+            let is_dynamic = world.get::<&Static>(entity).is_err();
+            (push, depth, entity, is_dynamic)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Swept-sphere CCD against static geometry
+// ---------------------------------------------------------------------------
+
+/// Returns the first-contact fraction t ∈ [0,1] for a sphere of `radius` starting at
+/// `start` and moving `len` world-units in direction `dir` against one collider.
+/// Returns 1.0 if no contact within the sweep distance.
+fn sweep_sphere_vs(
+    radius: f32,
+    start: Vec3,
+    dir: Vec3,
+    len: f32,
+    other_pos: Vec3,
+    kind: &ColliderKind,
+) -> f32 {
+    match kind {
+        ColliderKind::Plane { normal, offset } => {
+            let dist_a = start.dot(*normal) - offset;
+            if dist_a < radius {
+                return 1.0; // already inside; overlap-resolution handles it
+            }
+            let d_dot = dir.dot(*normal);
+            if d_dot >= -1e-6 {
+                return 1.0; // moving away or parallel
+            }
+            let t_contact = (dist_a - radius) / (-d_dot);
+            if t_contact > len {
+                return 1.0;
+            }
+            (t_contact / len).clamp(0.0, 1.0)
+        }
+        ColliderKind::Sphere { radius: other_r } => {
+            let combined_r = radius + other_r;
+            let oc = start - other_pos;
+            let b = 2.0 * oc.dot(dir);
+            let c = oc.dot(oc) - combined_r * combined_r;
+            if c < 0.0 {
+                return 1.0; // already overlapping
+            }
+            let disc = b * b - 4.0 * c;
+            if disc < 0.0 {
+                return 1.0;
+            }
+            let t_contact = (-b - disc.sqrt()) * 0.5;
+            if t_contact < 0.0 || t_contact > len {
+                return 1.0;
+            }
+            (t_contact / len).clamp(0.0, 1.0)
+        }
+        ColliderKind::Box { half_extents } => {
+            // Expand AABB by sphere radius and do a ray test (Minkowski sum).
+            let exp_half = *half_extents + Vec3::splat(radius);
+            let box_min = other_pos - exp_half;
+            let box_max = other_pos + exp_half;
+            // If start is already inside the expanded box, let overlap-resolution handle it.
+            if start.x > box_min.x && start.y > box_min.y && start.z > box_min.z
+                && start.x < box_max.x && start.y < box_max.y && start.z < box_max.z
+            {
+                return 1.0;
+            }
+            let inv = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+            let t1 = (box_min - start) * inv;
+            let t2 = (box_max - start) * inv;
+            let tmin = t1.min(t2);
+            let tmax = t1.max(t2);
+            let entry = tmin.x.max(tmin.y).max(tmin.z);
+            let exit  = tmax.x.min(tmax.y).min(tmax.z);
+            if exit < 0.0 || entry > exit || entry > len {
+                return 1.0;
+            }
+            (entry.max(0.0) / len).clamp(0.0, 1.0)
+        }
+        ColliderKind::Capsule { radius: other_r, half_height } => {
+            // Conservative: bounding sphere of the capsule.
+            let approx_r = other_r + half_height;
+            let combined_r = radius + approx_r;
+            let oc = start - other_pos;
+            let b = 2.0 * oc.dot(dir);
+            let c = oc.dot(oc) - combined_r * combined_r;
+            if c < 0.0 {
+                return 1.0;
+            }
+            let disc = b * b - 4.0 * c;
+            if disc < 0.0 {
+                return 1.0;
+            }
+            let t_contact = (-b - disc.sqrt()) * 0.5;
+            if t_contact < 0.0 || t_contact > len {
+                return 1.0;
+            }
+            (t_contact / len).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// Sweep a sphere of `radius` from `start` along `delta` against all static geometry.
+/// Returns the fraction [0,1] of `delta` safely traversable before first contact.
+/// `skip_entities` are excluded from the query.
+pub fn sweep_sphere_static(
+    world: &World,
+    radius: f32,
+    start: Vec3,
+    delta: Vec3,
+    skip_entities: &[Entity],
+) -> f32 {
+    let len = delta.length();
+    if len < 1e-6 {
+        return 1.0;
+    }
+    let dir = delta / len;
+
+    let entries: Vec<(Vec3, ColliderKind)> = world
+        .query::<(&Static, &GlobalTransform, &Collider)>()
+        .iter()
+        .filter(|(entity, _)| !skip_entities.contains(entity))
+        .map(|(_, (_, global, collider))| {
+            (global.0.w_axis.truncate(), collider_to_kind(collider))
+        })
+        .collect();
+
+    entries.iter().fold(1.0_f32, |t_min, (other_pos, kind)| {
+        t_min.min(sweep_sphere_vs(radius, start, dir, len, *other_pos, kind))
+    })
+}
+
 /// Walk up the Parent chain to find the root entity that owns physics (Velocity, LocalTransform).
 fn find_physics_root(world: &World, entity: Entity) -> Entity {
     let mut current = entity;
@@ -447,10 +643,9 @@ fn apply_friction(vel: &mut Vec3, normal: Vec3, mu: f32, normal_impulse: f32) {
 pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
     // Gather all collider entries
     let entries: Vec<ColliderEntry> = world
-        .query_mut::<(&GlobalTransform, &Collider, Option<&Held>, Option<&NoSelfCollision>)>()
+        .query_mut::<(&GlobalTransform, &Collider, Option<&NoSelfCollision>)>()
         .into_iter()
-        .filter(|(_entity, (_global, _collider, held, _nsc))| held.is_none())
-        .map(|(entity, (global, collider, _held, nsc))| {
+        .map(|(entity, (global, collider, nsc))| {
             let kind = match collider {
                 Collider::Sphere { radius } => ColliderKind::Sphere { radius: *radius },
                 Collider::Capsule { radius, height } => ColliderKind::Capsule {
@@ -492,10 +687,18 @@ pub fn collision_system(world: &mut World) -> Vec<CollisionEvent> {
 
     // Response — normal points from A to B in all cases
     for event in &events {
-        let root_a = find_physics_root(world, event.entity_a);
-        let root_b = find_physics_root(world, event.entity_b);
-        let a_static = world.get::<&Static>(root_a).is_ok();
-        let b_static = world.get::<&Static>(root_b).is_ok();
+        // Held entities are kinematic: they block dynamic entities but aren't moved by collisions.
+        let a_held = world.get::<&Held>(event.entity_a).is_ok();
+        let b_held = world.get::<&Held>(event.entity_b).is_ok();
+        if a_held && b_held {
+            continue;
+        }
+        // For held entities don't walk up to the player root; treat the entity itself as the
+        // kinematic obstacle (so its position is the held object's position, not the player's).
+        let root_a = if !a_held { find_physics_root(world, event.entity_a) } else { event.entity_a };
+        let root_b = if !b_held { find_physics_root(world, event.entity_b) } else { event.entity_b };
+        let a_static = a_held || world.get::<&Static>(root_a).is_ok();
+        let b_static = b_held || world.get::<&Static>(root_b).is_ok();
 
         if a_static && b_static {
             continue;

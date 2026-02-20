@@ -199,19 +199,37 @@ impl GameApp {
             self.camera.tick_body_yaw(dt);
         }
 
-        // Grab/throw must run before player movement to produce speed multiplier
-        let speed_mult = if self.camera.mode == CameraMode::Player {
+        // Grab/throw must run before player movement to produce speed multiplier, yaw lock,
+        // and movement block direction.
+        let (speed_mult, yaw_clamp, move_block) = if self.camera.mode == CameraMode::Player {
             let camera = &self.camera;
             grab_throw_system(&mut self.world, input, camera, dt)
         } else {
-            1.0
+            (1.0, None, None)
         };
+
+        // Apply yaw lock from grab system: prevent camera and body yaw from advancing past the
+        // clamp point in the blocked direction. Clamping body_yaw here (after tick_body_yaw but
+        // before player_movement_system) stops the visual rotation on the same frame.
+        if let Some((lock_yaw, block_dir)) = yaw_clamp {
+            let exceeds = |yaw: f32| -> bool {
+                let d = yaw - lock_yaw;
+                let diff = d - 360.0 * (d / 360.0).round();
+                diff * block_dir > 0.0
+            };
+            if exceeds(self.camera.yaw) {
+                self.camera.yaw = lock_yaw;
+            }
+            if exceeds(self.camera.body_yaw) {
+                self.camera.body_yaw = lock_yaw;
+            }
+        }
 
         match self.camera.mode {
             CameraMode::Player => {
                 player_state_system(&mut self.world, input, dt);
                 let camera = &self.camera;
-                player_movement_system(&mut self.world, input, camera, speed_mult, dt);
+                player_movement_system(&mut self.world, input, camera, speed_mult, move_block, dt);
             }
             CameraMode::Fly => {
                 self.camera.move_wasd(input, dt);

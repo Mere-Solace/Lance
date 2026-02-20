@@ -28,6 +28,10 @@ pub struct GrabState {
     pub prev_world_pos: Vec3,
     /// Smoothed world-space velocity of the held entity.
     pub held_velocity: Vec3,
+    /// Yaw lock: `Some((clamp_yaw, block_dir))` when the held object is laterally blocked by
+    /// a wall. `block_dir` is `+1.0` (blocked turning right) or `-1.0` (blocked turning left).
+    /// `app.rs` reads this each frame to clamp `camera.yaw` and `camera.body_yaw`.
+    pub yaw_lock: Option<(f32, f32)>,
 }
 
 impl GrabState {
@@ -39,6 +43,7 @@ impl GrabState {
             held_rotation: Quat::IDENTITY,
             prev_world_pos: Vec3::ZERO,
             held_velocity: Vec3::ZERO,
+            yaw_lock: None,
         }
     }
 }
