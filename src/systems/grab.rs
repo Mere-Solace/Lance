@@ -5,14 +5,17 @@ use sdl2::mouse::MouseButton;
 
 use crate::camera::Camera;
 use crate::components::{
-    add_child, remove_child, GlobalTransform, GrabState, Grabbable, Held, LocalTransform, Player,
-    Static, Velocity,
+    add_child, remove_child, Collider, GlobalTransform, GrabState, Grabbable, Held, LocalTransform,
+    NoSelfCollision, Player, Static, Velocity,
 };
 use crate::engine::input::{InputEvent, InputState};
 
+use super::collision::{query_collisions_at, sweep_sphere_static};
 use super::raycast::raycast_grabbable;
 
 const GRAB_DISTANCE: f32 = 5.0;
+const HOLD_RESOLVE_ITERS: usize = 3;
+const HOLD_PUSH_IMPULSE: f32 = 3.0;
 const HOLD_OFFSET: Vec3 = Vec3::new(0.0, 0.5, 1.5);
 const HOLD_LERP_SPEED: f32 = 10.0;
 const MIN_THROW_FORCE: f32 = 5.0;
@@ -24,6 +27,61 @@ const HELD_VELOCITY_DAMPER: f32 = 0.25;
 const DROP_VELOCITY_DAMPER: f32 = 0.05;
 const CHEST_HEIGHT: f32 = 0.5;
 const PITCH_ROTATION_LERP_SPEED: f32 = 12.0;
+/// Rubber-band snap distance: if the held object is more than this many meters from its ideal
+/// hold position AND geometry blocks the direct path back, the object is dropped.
+/// Kept tight so the drop fires before the ball can visually clip through geometry.
+const STRETCH_DROP_THRESHOLD: f32 = 0.4;
+
+/// Build the entity skip list for hold collision queries: held object, player root, all body parts.
+fn build_hold_skip_list(
+    world: &World,
+    held_entity: hecs::Entity,
+    player_entity: hecs::Entity,
+) -> Vec<hecs::Entity> {
+    let mut skip = vec![held_entity, player_entity];
+    for (entity, nsc) in world.query::<&NoSelfCollision>().iter() {
+        if nsc.0 == player_entity {
+            skip.push(entity);
+        }
+    }
+    skip
+}
+
+/// Returns a conservative bounding radius used for the swept-sphere CCD test.
+fn collider_bounding_radius(coll: &Collider) -> f32 {
+    match coll {
+        Collider::Sphere { radius } => *radius,
+        Collider::Box { half_extents } => half_extents.length(),
+        Collider::Capsule { radius, height } => radius + height * 0.5,
+        Collider::Plane { .. } => 0.0,
+    }
+}
+
+/// Resolve a held object's world position against world colliders using `skip` as the exclusion list.
+/// Dynamic objects that overlap receive a push impulse.
+fn resolve_held_pos(
+    world: &mut World,
+    collider: &Collider,
+    world_target: Vec3,
+    skip: &[hecs::Entity],
+) -> Vec3 {
+    let mut pos = world_target;
+    for _ in 0..HOLD_RESOLVE_ITERS {
+        let overlaps = query_collisions_at(world, collider, pos, skip);
+        if overlaps.is_empty() {
+            break;
+        }
+        for (push, depth, other, is_dynamic) in overlaps {
+            pos += push * depth;
+            if is_dynamic {
+                if let Ok(mut vel) = world.get::<&mut Velocity>(other) {
+                    vel.0 -= push * HOLD_PUSH_IMPULSE;
+                }
+            }
+        }
+    }
+    pos
+}
 
 /// Grab/throw system. Returns movement speed multiplier (1.0 normal, 0.3 during wind-up).
 pub fn grab_throw_system(
@@ -108,8 +166,11 @@ pub fn grab_throw_system(
                         lt.rotation = local_rot;
                     }
 
-                    // Mark as held, store the local rotation to keep it stable
+                    // Mark as held, store the local rotation to keep it stable.
+                    // NoSelfCollision lets collision_system treat the object as a kinematic obstacle
+                    // that blocks the player's capsule while ignoring limbs/head (same owner).
                     let _ = world.insert_one(hit.entity, Held);
+                    let _ = world.insert_one(hit.entity, NoSelfCollision(player_entity));
                     let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                     grab.held_entity = Some(hit.entity);
                     grab.held_rotation = local_rot;
@@ -147,6 +208,7 @@ pub fn grab_throw_system(
                     lt.rotation = world_rot;
                 }
                 let _ = world.remove_one::<Held>(held);
+                let _ = world.remove_one::<NoSelfCollision>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
                     vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
                 }
@@ -163,9 +225,98 @@ pub fn grab_throw_system(
             let target_pos = pitch_quat * HOLD_OFFSET;
             let target_rot = pitch_quat * held_rotation;
 
-            // Lerp local position and rotation toward pitch-adjusted targets
+            // Resolve held object against world geometry in world space, then convert back to local
+            let (player_pos, player_yaw) = {
+                let lt = world.get::<&LocalTransform>(player_entity).unwrap();
+                (lt.position, lt.rotation)
+            };
+            let world_target = player_pos + player_yaw * target_pos;
+            let collider_copy: Option<Collider> = world.get::<&Collider>(held).ok().map(|c| match &*c {
+                Collider::Sphere { radius } => Collider::Sphere { radius: *radius },
+                Collider::Capsule { radius, height } => Collider::Capsule { radius: *radius, height: *height },
+                Collider::Plane { normal, offset } => Collider::Plane { normal: *normal, offset: *offset },
+                Collider::Box { half_extents } => Collider::Box { half_extents: *half_extents },
+            });
+            // Current world position and rotation of the held object (before modification this frame).
+            let (current_lt_pos, current_lt_rot) = world.get::<&LocalTransform>(held)
+                .map(|lt| (lt.position, lt.rotation))
+                .unwrap_or((target_pos, Quat::IDENTITY));
+            let current_world_pos = player_pos + player_yaw * current_lt_pos;
+            // Skip list shared by both sweep and overlap-resolution.
+            let skip = build_hold_skip_list(world, held, player_entity);
+
+            // Angle-drop: if the held object is more than 90° from the camera's forward direction,
+            // the player has turned their back on it — drop rather than let it orbit behind them.
+            {
+                let dir_to_held = (current_world_pos - player_pos).normalize_or_zero();
+                if camera.front().dot(dir_to_held) < 0.0 {
+                    let world_rot = player_yaw * current_lt_rot;
+                    remove_child(world, player_entity, held);
+                    if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
+                        lt.position = current_world_pos;
+                        lt.rotation = world_rot;
+                    }
+                    let _ = world.remove_one::<Held>(held);
+                    let _ = world.remove_one::<NoSelfCollision>(held);
+                    if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
+                        vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
+                    }
+                    let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
+                    grab.held_entity = None;
+                    grab.wind_up_time = 0.0;
+                    grab.is_winding = false;
+                    grab.held_velocity = Vec3::ZERO;
+                    return 1.0;
+                }
+            }
+
+            // Stretch-drop: if the ball is too far from its ideal hold position AND geometry
+            // blocks the direct path from ball to ideal, drop it rather than clip.
+            let delta = world_target - current_world_pos;
+            let stretch = delta.length();
+            if let Some(ref coll) = collider_copy {
+                if stretch > STRETCH_DROP_THRESHOLD {
+                    let t = sweep_sphere_static(
+                        world,
+                        collider_bounding_radius(coll),
+                        current_world_pos,
+                        delta,
+                        &skip,
+                    );
+                    if t < 1.0 {
+                        // Use current-frame position (not lagged GlobalTransform) so the ball
+                        // is dropped at its valid pre-clip location, not inside geometry.
+                        let world_rot = player_yaw * current_lt_rot;
+                        remove_child(world, player_entity, held);
+                        if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
+                            lt.position = current_world_pos;
+                            lt.rotation = world_rot;
+                        }
+                        let _ = world.remove_one::<Held>(held);
+                        let _ = world.remove_one::<NoSelfCollision>(held);
+                        if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
+                            vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
+                        }
+                        let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
+                        grab.held_entity = None;
+                        grab.wind_up_time = 0.0;
+                        grab.is_winding = false;
+                        grab.held_velocity = Vec3::ZERO;
+                        return 1.0;
+                    }
+                }
+            }
+
+            let effective_target = if let Some(ref coll) = collider_copy {
+                let resolved = resolve_held_pos(world, coll, world_target, &skip);
+                player_yaw.inverse() * (resolved - player_pos)
+            } else {
+                target_pos
+            };
+
+            // Lerp local position and rotation toward collision-resolved targets
             if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
-                let pos_diff = target_pos - lt.position;
+                let pos_diff = effective_target - lt.position;
                 lt.position += pos_diff * (HOLD_LERP_SPEED * dt).min(1.0);
                 lt.rotation = lt.rotation.slerp(target_rot, (PITCH_ROTATION_LERP_SPEED * dt).min(1.0));
             }
@@ -213,6 +364,7 @@ pub fn grab_throw_system(
                     lt.rotation = world_rot;
                 }
                 let _ = world.remove_one::<Held>(held);
+                let _ = world.remove_one::<NoSelfCollision>(held);
                 if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
                     vel.0 = throw_vel;
                 }
