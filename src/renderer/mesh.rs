@@ -510,17 +510,3 @@ pub fn create_sword() -> Mesh {
     upload_mesh(&vertices, &indices)
 }
 
-pub fn create_ground_plane(half_extent: f32) -> Mesh {
-    let h = half_extent;
-    #[rustfmt::skip]
-    let vertices: Vec<f32> = vec![
-        // pos              // normal
-        -h, 0.0, -h,       0.0, 1.0, 0.0,
-         h, 0.0, -h,       0.0, 1.0, 0.0,
-         h, 0.0,  h,       0.0, 1.0, 0.0,
-        -h, 0.0,  h,       0.0, 1.0, 0.0,
-    ];
-    let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
-
-    upload_mesh(&vertices, &indices)
-}

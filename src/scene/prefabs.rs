@@ -3,7 +3,7 @@ use hecs::{Entity, World};
 
 use crate::components::*;
 use crate::renderer::mesh::{
-    create_capsule, create_ground_plane, create_sphere, create_sword, create_tapered_box,
+    create_capsule, create_sphere, create_sword, create_tapered_box,
 };
 use crate::renderer::MeshStore;
 
@@ -244,11 +244,24 @@ fn spawn_character(
 // Public prefab factories
 // ---------------------------------------------------------------------------
 
-/// Spawn the ground plane (static, infinite, Y=0).
+/// Spawn the ground as a thick box so the top face is captured in the shadow map,
+/// giving correct contact shadows for objects resting on it. Top face sits at Y=0.
+///
+/// Uses a unit mesh (1×1×1) with large scale so that `approx_bounding_sphere`
+/// in the renderer reads the correct size from the transform columns.  Without
+/// this, the floor (scale=1 on a 1000-unit mesh) gets a bounding sphere of
+/// radius=2 and is frustum-culled out of shadow cascades as soon as the camera
+/// moves away from the world origin.
 pub fn spawn_ground(world: &mut World, meshes: &mut MeshStore) -> Entity {
-    let ground_handle = meshes.add(create_ground_plane(500.0));
+    const HALF_EXTENT: f32 = 500.0;
+    const THICKNESS: f32 = 2.0;
+    // Unit box: Y from -0.5 to +0.5 in local space.
+    let ground_handle = meshes.add(create_tapered_box(1.0, 1.0, 1.0, 1.0, 1.0));
+    // Scale so the box covers [-HALF_EXTENT, HALF_EXTENT] in X/Z and [0, -THICKNESS] in Y.
+    let mut ground_t = LocalTransform::new(Vec3::new(0.0, -THICKNESS / 2.0, 0.0));
+    ground_t.scale = Vec3::new(HALF_EXTENT * 2.0, THICKNESS, HALF_EXTENT * 2.0);
     world.spawn((
-        LocalTransform::new(Vec3::ZERO),
+        ground_t,
         GlobalTransform(Mat4::IDENTITY),
         ground_handle,
         Color(Vec3::new(0.3, 0.6, 0.2)),
