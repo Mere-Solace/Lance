@@ -10,7 +10,7 @@ use crate::components::{
 };
 use crate::engine::input::{InputEvent, InputState};
 
-use super::collision::{query_collisions_at, sweep_sphere_static};
+use super::collision::query_collisions_at;
 use super::raycast::raycast_grabbable;
 
 const GRAB_DISTANCE: f32 = 5.0;
@@ -27,10 +27,12 @@ const HELD_VELOCITY_DAMPER: f32 = 0.25;
 const DROP_VELOCITY_DAMPER: f32 = 0.05;
 const CHEST_HEIGHT: f32 = 0.5;
 const PITCH_ROTATION_LERP_SPEED: f32 = 12.0;
-/// Rubber-band snap distance: if the held object is more than this many meters from its ideal
-/// hold position AND geometry blocks the direct path back, the object is dropped.
-/// Kept tight so the drop fires before the ball can visually clip through geometry.
-const STRETCH_DROP_THRESHOLD: f32 = 0.4;
+/// Lateral (XZ) displacement from `world_target` beyond which the held object is considered
+/// wall-blocked. Used to trigger the yaw-lock mechanic.
+const BLOCK_DETECT_THRESHOLD: f32 = 0.05;
+/// Extra degrees the player may rotate in the blocked direction after a wall block is first
+/// detected, before the yaw is frozen. The rubber band snaps after this much give.
+const YAW_GRACE_DEGREES: f32 = 10.0;
 
 /// Build the entity skip list for hold collision queries: held object, player root, all body parts.
 fn build_hold_skip_list(
@@ -45,16 +47,6 @@ fn build_hold_skip_list(
         }
     }
     skip
-}
-
-/// Returns a conservative bounding radius used for the swept-sphere CCD test.
-fn collider_bounding_radius(coll: &Collider) -> f32 {
-    match coll {
-        Collider::Sphere { radius } => *radius,
-        Collider::Box { half_extents } => half_extents.length(),
-        Collider::Capsule { radius, height } => radius + height * 0.5,
-        Collider::Plane { .. } => 0.0,
-    }
 }
 
 /// Resolve a held object's world position against world colliders using `skip` as the exclusion list.
@@ -83,14 +75,25 @@ fn resolve_held_pos(
     pos
 }
 
-/// Grab/throw system. Returns movement speed multiplier (1.0 normal, 0.3 during wind-up).
+/// Grab/throw system.
+///
+/// Returns `(speed_multiplier, yaw_lock)`:
+/// - `speed_multiplier`: 1.0 normally, [`WIND_UP_MOVE_SLOWDOWN`] during throw wind-up.
+/// - `yaw_lock`: `Some((clamp_yaw, block_dir))` when the held object is laterally blocked by a
+///   wall and the player is trying to rotate into it. `block_dir` is `+1.0` (blocked turning
+///   right) or `-1.0` (blocked turning left). `None` when rotation is free.
+/// - `move_block`: horizontal unit vector pointing *away* from the blocking wall. The caller
+///   should remove any movement component pointing toward the wall (negative dot with this vector).
+///   `None` when the held object is unblocked.
+///
+/// The caller (`app.rs`) applies the yaw clamp and passes `move_block` to `player_movement_system`.
 pub fn grab_throw_system(
     world: &mut World,
     input: &InputState,
     camera: &Camera,
     dt: f32,
-) -> f32 {
-    // Get player's GrabState and entity
+) -> (f32, Option<(f32, f32)>, Option<Vec3>) {
+    // Get player entity.
     let player_entity = {
         let mut found = None;
         for (entity, (_player, _grab)) in world.query::<(&Player, &GrabState)>().iter() {
@@ -99,11 +102,10 @@ pub fn grab_throw_system(
         }
         match found {
             Some(e) => e,
-            None => return 1.0,
+            None => return (1.0, None, None),
         }
     };
 
-    // Check for right-click pressed event (grab trigger: Alt + RightClick)
     let right_click_pressed = input.events.iter().any(|e| {
         matches!(e, InputEvent::MouseButtonPressed(MouseButton::Right))
     });
@@ -114,7 +116,6 @@ pub fn grab_throw_system(
     let right_held = input.is_mouse_button_held(MouseButton::Right);
     let left_held = input.is_mouse_button_held(MouseButton::Left);
 
-    // Read current grab state
     let (held_entity, is_winding, wind_up_time, held_rotation, held_velocity) = {
         let grab = world.get::<&GrabState>(player_entity).unwrap();
         (grab.held_entity, grab.is_winding, grab.wind_up_time, grab.held_rotation, grab.held_velocity)
@@ -122,53 +123,43 @@ pub fn grab_throw_system(
 
     match held_entity {
         None => {
-            // Not holding — check for grab attempt
+            // Not holding — check for grab attempt.
             if right_click_pressed && alt_held {
-                // Raycast from player's chest, not the camera
                 let chest_pos = {
                     let lt = world.get::<&LocalTransform>(player_entity).unwrap();
                     lt.position + Vec3::Y * CHEST_HEIGHT
                 };
                 if let Some(hit) = raycast_grabbable(world, chest_pos, camera.front(), GRAB_DISTANCE) {
-                    // Don't grab static entities
                     if world.get::<&Static>(hit.entity).is_ok() {
-                        return 1.0;
+                        return (1.0, None, None);
                     }
-                    // Don't grab non-Grabbable (redundant since raycast filters, but safe)
                     if world.get::<&Grabbable>(hit.entity).is_err() {
-                        return 1.0;
+                        return (1.0, None, None);
                     }
 
-                    // Read player's world position and rotation for coordinate conversion
                     let (player_pos, player_yaw) = {
                         let lt = world.get::<&LocalTransform>(player_entity).unwrap();
                         (lt.position, lt.rotation)
                     };
-
-                    // Read held entity's world position and rotation
                     let (held_world_pos, held_world_rot) = {
                         let lt = world.get::<&LocalTransform>(hit.entity).unwrap();
                         (lt.position, lt.rotation)
                     };
 
-                    // Compute local offset relative to player
                     let world_offset = held_world_pos - player_pos;
                     let inv_yaw = player_yaw.inverse();
                     let local_offset = inv_yaw * world_offset;
 
-                    // Re-parent held entity under player
                     add_child(world, player_entity, hit.entity);
 
-                    // Set local transform relative to player
                     let local_rot = inv_yaw * held_world_rot;
                     if let Ok(mut lt) = world.get::<&mut LocalTransform>(hit.entity) {
                         lt.position = local_offset;
                         lt.rotation = local_rot;
                     }
 
-                    // Mark as held, store the local rotation to keep it stable.
-                    // NoSelfCollision lets collision_system treat the object as a kinematic obstacle
-                    // that blocks the player's capsule while ignoring limbs/head (same owner).
+                    // NoSelfCollision lets collision_system treat the object as a kinematic
+                    // obstacle that blocks the player's capsule while ignoring limbs/head.
                     let _ = world.insert_one(hit.entity, Held);
                     let _ = world.insert_one(hit.entity, NoSelfCollision(player_entity));
                     let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
@@ -180,29 +171,24 @@ pub fn grab_throw_system(
                     grab.held_velocity = Vec3::ZERO;
                 }
             }
-            1.0
+            (1.0, None, None)
         }
         Some(held) => {
-            // Safety: check entity still exists
+            // Safety: check entity still exists.
             if !world.contains(held) {
                 let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                 grab.held_entity = None;
                 grab.wind_up_time = 0.0;
                 grab.is_winding = false;
-                return 1.0;
+                grab.yaw_lock = None;
+                return (1.0, None, None);
             }
 
-            // Drop when either Alt OR right-click is released (and not winding)
+            // Drop when either Alt OR right-click is released (and not winding).
             let should_drop = (!alt_held || !right_held) && !is_winding;
-
             if should_drop {
-                // Read world transform from GlobalTransform before un-parenting
                 let (world_pos, world_rot) = extract_world_transform(world, held);
-
-                // Un-parent from player
                 remove_child(world, player_entity, held);
-
-                // Restore world-space position and rotation
                 if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                     lt.position = world_pos;
                     lt.rotation = world_rot;
@@ -217,15 +203,16 @@ pub fn grab_throw_system(
                 grab.wind_up_time = 0.0;
                 grab.is_winding = false;
                 grab.held_velocity = Vec3::ZERO;
-                return 1.0;
+                grab.yaw_lock = None;
+                return (1.0, None, None);
             }
 
-            // Compute pitch rotation from camera and apply to hold offset + rotation
+            // Compute pitch rotation from camera and apply to hold offset + rotation.
             let pitch_quat = Quat::from_rotation_x(-camera.pitch.to_radians());
             let target_pos = pitch_quat * HOLD_OFFSET;
             let target_rot = pitch_quat * held_rotation;
 
-            // Resolve held object against world geometry in world space, then convert back to local
+            // Resolve held object against world geometry in world space, then convert back to local.
             let (player_pos, player_yaw) = {
                 let lt = world.get::<&LocalTransform>(player_entity).unwrap();
                 (lt.position, lt.rotation)
@@ -237,128 +224,90 @@ pub fn grab_throw_system(
                 Collider::Plane { normal, offset } => Collider::Plane { normal: *normal, offset: *offset },
                 Collider::Box { half_extents } => Collider::Box { half_extents: *half_extents },
             });
-            // Current world position and rotation of the held object (before modification this frame).
-            let (current_lt_pos, current_lt_rot) = world.get::<&LocalTransform>(held)
-                .map(|lt| (lt.position, lt.rotation))
-                .unwrap_or((target_pos, Quat::IDENTITY));
-            let current_world_pos = player_pos + player_yaw * current_lt_pos;
-            // Skip list shared by both sweep and overlap-resolution.
             let skip = build_hold_skip_list(world, held, player_entity);
 
-            // Angle-drop: if the held object is more than 90° from the camera's forward direction,
-            // the player has turned their back on it — drop rather than let it orbit behind them.
-            {
-                let dir_to_held = (current_world_pos - player_pos).normalize_or_zero();
-                if camera.front().dot(dir_to_held) < 0.0 {
-                    let world_rot = player_yaw * current_lt_rot;
-                    remove_child(world, player_entity, held);
-                    if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
-                        lt.position = current_world_pos;
-                        lt.rotation = world_rot;
-                    }
-                    let _ = world.remove_one::<Held>(held);
-                    let _ = world.remove_one::<NoSelfCollision>(held);
-                    if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
-                        vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
-                    }
-                    let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
-                    grab.held_entity = None;
-                    grab.wind_up_time = 0.0;
-                    grab.is_winding = false;
-                    grab.held_velocity = Vec3::ZERO;
-                    return 1.0;
-                }
-            }
-
-            // Stretch-drop: if the ball is too far from its ideal hold position AND geometry
-            // blocks the direct path from ball to ideal, drop it rather than clip.
-            let delta = world_target - current_world_pos;
-            let stretch = delta.length();
-            if let Some(ref coll) = collider_copy {
-                if stretch > STRETCH_DROP_THRESHOLD {
-                    let t = sweep_sphere_static(
-                        world,
-                        collider_bounding_radius(coll),
-                        current_world_pos,
-                        delta,
-                        &skip,
-                    );
-                    if t < 1.0 {
-                        // Use current-frame position (not lagged GlobalTransform) so the ball
-                        // is dropped at its valid pre-clip location, not inside geometry.
-                        let world_rot = player_yaw * current_lt_rot;
-                        remove_child(world, player_entity, held);
-                        if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
-                            lt.position = current_world_pos;
-                            lt.rotation = world_rot;
-                        }
-                        let _ = world.remove_one::<Held>(held);
-                        let _ = world.remove_one::<NoSelfCollision>(held);
-                        if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
-                            vel.0 = held_velocity * DROP_VELOCITY_DAMPER;
-                        }
-                        let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
-                        grab.held_entity = None;
-                        grab.wind_up_time = 0.0;
-                        grab.is_winding = false;
-                        grab.held_velocity = Vec3::ZERO;
-                        return 1.0;
-                    }
-                }
-            }
-
-            let effective_target = if let Some(ref coll) = collider_copy {
+            // Resolve against geometry. Lateral (XZ) displacement between the resolved position
+            // and world_target indicates a wall is blocking the object. When that happens and the
+            // player is rotating into the wall, start (or maintain) a yaw lock: the player gets
+            // YAW_GRACE_DEGREES of further rotation, then yaw freezes until the ball is freed.
+            let (effective_target, new_yaw_lock, new_move_block) = if let Some(ref coll) = collider_copy {
                 let resolved = resolve_held_pos(world, coll, world_target, &skip);
-                player_yaw.inverse() * (resolved - player_pos)
+
+                let disp = resolved - world_target;
+                let horiz = Vec3::new(disp.x, 0.0, disp.z);
+                let lateral_disp = horiz.length();
+
+                let prev_lock = world.get::<&GrabState>(player_entity).ok().and_then(|g| g.yaw_lock);
+
+                let new_lock = if lateral_disp > BLOCK_DETECT_THRESHOLD && input.mouse_dx != 0.0 {
+                    let dir = input.mouse_dx.signum();
+                    match prev_lock {
+                        // Already locked in the same direction: keep the existing clamp unchanged
+                        // so the grace window doesn't reset every frame.
+                        Some((ly, pd)) if pd == dir => Some((ly, pd)),
+                        // New block, or player reversed and hit again: fresh grace window.
+                        _ => Some((camera.yaw + dir * YAW_GRACE_DEGREES, dir)),
+                    }
+                } else if lateral_disp > BLOCK_DETECT_THRESHOLD {
+                    // Still blocked but not rotating: preserve any existing lock.
+                    prev_lock
+                } else {
+                    None // unblocked: release yaw lock
+                };
+
+                // Movement block: unit vector pointing away from the wall. player_movement_system
+                // zeroes out movement components pointing toward the wall (negative dot).
+                let move_block = if lateral_disp > BLOCK_DETECT_THRESHOLD {
+                    Some(horiz / lateral_disp) // already nonzero — lateral_disp > threshold
+                } else {
+                    None
+                };
+
+                (player_yaw.inverse() * (resolved - player_pos), new_lock, move_block)
             } else {
-                target_pos
+                (target_pos, None, None)
             };
 
-            // Lerp local position and rotation toward collision-resolved targets
+            // Lerp local position and rotation toward collision-resolved targets.
             if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                 let pos_diff = effective_target - lt.position;
                 lt.position += pos_diff * (HOLD_LERP_SPEED * dt).min(1.0);
                 lt.rotation = lt.rotation.slerp(target_rot, (PITCH_ROTATION_LERP_SPEED * dt).min(1.0));
             }
-            // Zero velocity while held
+            // Zero velocity while held.
             if let Ok(mut vel) = world.get::<&mut Velocity>(held) {
                 vel.0 = Vec3::ZERO;
             }
 
-            // Track world-space velocity of the held object
+            // Track world-space velocity and persist the updated yaw lock.
             {
                 let (current_world_pos, _) = extract_world_transform(world, held);
                 let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                 if dt > 0.0 {
                     let frame_vel = (current_world_pos - grab.prev_world_pos) / dt;
-                    // Exponential smoothing to avoid jitter
                     let smoothing = (VELOCITY_SMOOTHING * dt).min(1.0);
                     grab.held_velocity = grab.held_velocity.lerp(frame_vel, smoothing);
                 }
                 grab.prev_world_pos = current_world_pos;
+                grab.yaw_lock = new_yaw_lock;
             }
 
-            // Wind-up with left click
+            // Wind-up with left click.
             if left_held {
                 let mut grab = world.get::<&mut GrabState>(player_entity).unwrap();
                 grab.is_winding = true;
                 grab.wind_up_time = (grab.wind_up_time + dt).min(MAX_WIND_UP_TIME);
-                return WIND_UP_MOVE_SLOWDOWN;
+                return (WIND_UP_MOVE_SLOWDOWN, new_yaw_lock, new_move_block);
             }
 
-            // Throw on left click release while winding
+            // Throw on left click release while winding.
             if left_click_released && is_winding {
                 let throw_t = (wind_up_time / MAX_WIND_UP_TIME).clamp(0.0, 1.0);
                 let force = MIN_THROW_FORCE + (MAX_THROW_FORCE - MIN_THROW_FORCE) * throw_t;
                 let throw_vel = camera.front() * force + HELD_VELOCITY_DAMPER * held_velocity;
 
-                // Read world transform from GlobalTransform before un-parenting
                 let (world_pos, world_rot) = extract_world_transform(world, held);
-
-                // Un-parent from player
                 remove_child(world, player_entity, held);
-
-                // Restore world-space position and rotation, apply throw velocity
                 if let Ok(mut lt) = world.get::<&mut LocalTransform>(held) {
                     lt.position = world_pos;
                     lt.rotation = world_rot;
@@ -373,11 +322,12 @@ pub fn grab_throw_system(
                 grab.wind_up_time = 0.0;
                 grab.is_winding = false;
                 grab.held_velocity = Vec3::ZERO;
-                return 1.0;
+                grab.yaw_lock = None;
+                return (1.0, None, None);
             }
 
-            // Still holding, not winding
-            1.0
+            // Still holding, not winding.
+            (1.0, new_yaw_lock, new_move_block)
         }
     }
 }

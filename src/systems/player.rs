@@ -249,6 +249,7 @@ pub fn player_movement_system(
     input: &InputState,
     camera: &Camera,
     speed_multiplier: f32,
+    move_block: Option<Vec3>,
     dt: f32,
 ) {
     // Movement direction is always relative to the player body, not the camera.
@@ -264,6 +265,17 @@ pub fn player_movement_system(
     if input.is_key_held(Scancode::S) { move_dir -= forward; }
     if input.is_key_held(Scancode::A) { move_dir -= right; }
     if input.is_key_held(Scancode::D) { move_dir += right; }
+
+    // If the held object is pressed against a wall, remove the movement component
+    // that would push the player (and thus the ball) further into that wall.
+    // `move_block` points away from the wall; negative dot = moving toward it.
+    if let Some(block) = move_block {
+        let dot = move_dir.dot(block);
+        if dot < 0.0 {
+            move_dir -= block * dot;
+        }
+    }
+
     let has_input = move_dir.length_squared() > 0.0;
     let move_dir_norm = if has_input { move_dir.normalize() } else { Vec3::ZERO };
 
