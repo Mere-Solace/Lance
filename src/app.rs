@@ -193,6 +193,12 @@ impl GameApp {
     fn update_systems(&mut self, input: &InputState, dt: f32) -> f32 {
         self.handle_running_input(input);
 
+        // Lerp body_yaw toward camera.yaw — handles both normal turning and
+        // returning from free-look with a single continuous lerp (~200 ms).
+        if !self.camera.free_look {
+            self.camera.tick_body_yaw(dt);
+        }
+
         // Grab/throw must run before player movement to produce speed multiplier
         let speed_mult = if self.camera.mode == CameraMode::Player {
             let camera = &self.camera;

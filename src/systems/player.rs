@@ -251,8 +251,11 @@ pub fn player_movement_system(
     speed_multiplier: f32,
     dt: f32,
 ) {
-    let yaw_rad = camera.yaw.to_radians();
-    let forward = Vec3::new(yaw_rad.cos(), 0.0, yaw_rad.sin()).normalize();
+    // Movement direction is always relative to the player body, not the camera.
+    // During free-look the body stays fixed, so WASD stays consistent with where
+    // the character is facing regardless of where the camera has panned to.
+    let body_yaw_rad = camera.body_yaw.to_radians();
+    let forward = Vec3::new(body_yaw_rad.cos(), 0.0, body_yaw_rad.sin()).normalize();
     let right = forward.cross(Vec3::Y).normalize();
 
     // Build input direction once outside the loop.
@@ -267,10 +270,10 @@ pub fn player_movement_system(
     for (_entity, (local, vel, _player, fsm)) in
         world.query_mut::<(&mut LocalTransform, &mut Velocity, &Player, &PlayerFsm)>()
     {
-        // Rotate the player mesh to face camera yaw, unless free-look is active
-        // (alt-look: camera pans freely, character facing stays fixed).
+        // Body always faces body_yaw. During free-look this stays frozen;
+        // otherwise body_yaw lerps toward camera.yaw each frame (~200 ms).
         if !camera.free_look {
-            local.rotation = Quat::from_rotation_y(-yaw_rad + std::f32::consts::FRAC_PI_2);
+            local.rotation = Quat::from_rotation_y(-body_yaw_rad + std::f32::consts::FRAC_PI_2);
         }
 
         if fsm.state.is_airborne() {

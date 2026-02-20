@@ -48,6 +48,11 @@ pub struct Camera {
     pub perspective: Perspective,
     /// Whether the player is holding free-look (C): camera pans without rotating the character.
     pub free_look: bool,
+    /// The yaw the player body is currently facing.
+    /// Always lerps toward `camera.yaw` when `!free_look` — covers both normal
+    /// turning and the return from free-look with a single continuous lerp.
+    /// Frozen while `free_look` is held.
+    pub body_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
     pub arm_length_back: f32,
     /// User-controlled (zoom) arm length for third-person front. Clamped [ARM_MIN, ARM_MAX].
@@ -70,6 +75,7 @@ impl Camera {
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
+            body_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
             effective_arm_back: DEFAULT_ARM_BACK,
@@ -183,6 +189,29 @@ impl Camera {
 
                 self.position = eye + ray_dir * *eff;
             }
+        }
+    }
+
+    /// Lerp `body_yaw` toward `camera.yaw`. Call every frame when `!free_look`.
+    ///
+    /// Covers both normal turning and the return from free-look — one continuous lerp.
+    /// Speed is proportional to the remaining angle (5 °/s per degree), giving
+    /// roughly 200 ms convergence at any angular distance. A 120 °/s floor keeps
+    /// the tail-end from dragging.
+    pub fn tick_body_yaw(&mut self, dt: f32) {
+        const SPEED_FACTOR: f32 = 5.0;
+        const MIN_SPEED: f32 = 120.0;
+
+        let diff = {
+            let d = self.yaw - self.body_yaw;
+            d - 360.0 * (d / 360.0).round() // shortest path in [-180, 180]
+        };
+        let step = (diff.abs() * SPEED_FACTOR).max(MIN_SPEED) * dt;
+
+        if diff.abs() <= step {
+            self.body_yaw = self.yaw;
+        } else {
+            self.body_yaw += diff.signum() * step;
         }
     }
 
