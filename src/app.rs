@@ -6,8 +6,9 @@ use crate::engine::window::GameWindow;
 use crate::recording;
 use crate::renderer::{MeshStore, Renderer};
 use crate::systems::{
-    collision_system, grab_throw_system, grounded_system, physics_step, player_movement_system,
-    player_state_system, raycast_static, transform_propagation_system, PHYSICS_DT,
+    animation_system, collision_system, grab_throw_system, grounded_system, physics_step,
+    player_movement_system, player_state_system, raycast_static, transform_propagation_system,
+    PHYSICS_DT,
 };
 use crate::ui::{DebugHud, GameState, PauseAction, PauseMenu, TextRenderer};
 use glam::{Mat4, Vec3};
@@ -247,6 +248,10 @@ impl GameApp {
         }
         let alpha = self.physics_accum / PHYSICS_DT;
         grounded_system(&mut self.world, &collision_events, physics_ticks);
+
+        if self.camera.mode == CameraMode::Player {
+            animation_system(&mut self.world, dt);
+        }
 
         if self.camera.mode == CameraMode::Player {
             // Use interpolated player position so the camera follows

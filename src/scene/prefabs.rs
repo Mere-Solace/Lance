@@ -382,6 +382,7 @@ pub fn spawn_player(world: &mut World, meshes: &mut MeshStore, pos: Vec3) -> Ent
         Friction(0.8),
         Player,
         GrabState::new(),
+        AnimationState::new(),
         // Player spawns airborne (pos.y = 10); starts in Falling so the FSM
         // is correct immediately without a dummy Grounded → Falling transition.
         PlayerFsm::new(PlayerState::Falling),
