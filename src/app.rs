@@ -176,11 +176,15 @@ impl GameApp {
         }
 
         // Free-look (hold C): camera pans without rotating the character.
-        // On release, snap camera yaw back to the body's facing direction.
+        // On release, the player body lerps toward the camera yaw (~250 ms).
         let was_free_look = self.camera.free_look;
         self.camera.free_look = input.is_key_held(Scancode::C);
-        if was_free_look && !self.camera.free_look {
-            self.camera.yaw = self.camera.body_yaw;
+        if self.camera.free_look {
+            // Held (or re-entered): cancel any in-progress return.
+            self.camera.free_look_return = false;
+        } else if was_free_look {
+            // Just released: start the body lerp.
+            self.camera.free_look_return = true;
         }
 
         // Scroll wheel zoom.
@@ -190,8 +194,8 @@ impl GameApp {
 
         self.camera.look(input.mouse_dx, input.mouse_dy);
 
-        // Keep body_yaw in sync with camera.yaw every frame we are NOT in free-look.
-        if !self.camera.free_look {
+        // Keep body_yaw in sync with camera.yaw when neither free-look nor return is active.
+        if !self.camera.free_look && !self.camera.free_look_return {
             self.camera.body_yaw = self.camera.yaw;
         }
     }
@@ -202,6 +206,11 @@ impl GameApp {
 
     fn update_systems(&mut self, input: &InputState, dt: f32) -> f32 {
         self.handle_running_input(input);
+
+        // Advance the body-return lerp when active.
+        if self.camera.free_look_return && self.camera.tick_free_look_return(dt) {
+            self.camera.free_look_return = false;
+        }
 
         // Grab/throw must run before player movement to produce speed multiplier
         let speed_mult = if self.camera.mode == CameraMode::Player {

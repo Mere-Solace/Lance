@@ -48,10 +48,12 @@ pub struct Camera {
     pub perspective: Perspective,
     /// Whether the player is holding free-look (C): camera pans without rotating the character.
     pub free_look: bool,
-    /// The yaw the player body is facing.
-    /// - Normal play: kept in sync with `camera.yaw` every frame.
+    /// True while the player body is lerping back toward `camera.yaw` after free-look release.
+    pub free_look_return: bool,
+    /// The yaw the player body is currently facing.
+    /// - Normal play / return complete: kept in sync with `camera.yaw` every frame.
     /// - Free-look hold: frozen at the facing from before free-look started.
-    /// On release, `camera.yaw` snaps to this value.
+    /// - Return active: lerps toward `camera.yaw` independently.
     pub body_yaw: f32,
     /// User-controlled (zoom) arm length for third-person back. Clamped [ARM_MIN, ARM_MAX].
     pub arm_length_back: f32,
@@ -75,6 +77,7 @@ impl Camera {
             mode: CameraMode::Player,
             perspective: Perspective::ThirdPersonBack,
             free_look: false,
+            free_look_return: false,
             body_yaw: -90.0_f32,
             arm_length_back: DEFAULT_ARM_BACK,
             arm_length_front: DEFAULT_ARM_FRONT,
@@ -189,6 +192,30 @@ impl Camera {
 
                 self.position = eye + ray_dir * *eff;
             }
+        }
+    }
+
+    /// Lerp `body_yaw` toward the current `camera.yaw`. Returns `true` when complete.
+    ///
+    /// Speed is proportional to the remaining angle (4 °/s per degree), so the
+    /// body closes the gap in roughly 250 ms regardless of how far it has to travel.
+    /// A 90 °/s floor prevents crawling on the final few degrees.
+    pub fn tick_free_look_return(&mut self, dt: f32) -> bool {
+        const SPEED_FACTOR: f32 = 4.0;
+        const MIN_SPEED: f32 = 90.0;
+
+        let diff = {
+            let d = self.yaw - self.body_yaw;
+            d - 360.0 * (d / 360.0).round() // shortest path in [-180, 180]
+        };
+        let step = (diff.abs() * SPEED_FACTOR).max(MIN_SPEED) * dt;
+
+        if diff.abs() <= step {
+            self.body_yaw = self.yaw;
+            true
+        } else {
+            self.body_yaw += diff.signum() * step;
+            false
         }
     }
 
